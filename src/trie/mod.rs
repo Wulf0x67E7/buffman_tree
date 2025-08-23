@@ -1,6 +1,5 @@
 mod node;
 pub use node::*;
-use std::collections::btree_map::Entry;
 #[derive(Debug, PartialEq)]
 pub struct Trie<K, B, V> {
     root: Option<Node<K, B, V>>,
@@ -36,8 +35,8 @@ impl<K, B, V> Trie<K, B, V> {
         B: Ord + Clone,
     {
         let mut node = self.root.get_or_insert_default();
-        for k in &key {
-            node = node.make_branch().entry(k.clone()).or_default();
+        for key in &key {
+            node = node.insert_child(key.clone());
         }
         node.make_leaf(key, value)
     }
@@ -49,7 +48,7 @@ impl<K, B, V> Trie<K, B, V> {
         let mut node = self.root.as_ref()?;
         debug_assert!(!node.is_empty());
         for key in key {
-            node = node.as_branch()?.get(&key)?;
+            node = node.get_child(key)?;
             debug_assert!(!node.is_empty());
         }
         node.as_leaf().map(Leaf::as_ref)
@@ -62,10 +61,68 @@ impl<K, B, V> Trie<K, B, V> {
         let mut node = self.root.as_mut()?;
         debug_assert!(!node.is_empty());
         for key in key {
-            node = node.as_branch_mut()?.get_mut(&key)?;
+            node = node.get_child_mut(key)?;
             debug_assert!(!node.is_empty());
         }
         node.as_leaf_mut().map(Leaf::as_mut)
+    }
+    pub fn get_deepest<Q>(&self, key: Q) -> Option<&Node<K, B, V>>
+    where
+        Q: IntoIterator<Item = B>,
+        B: Ord,
+    {
+        let mut node = self.root.as_ref()?;
+        debug_assert!(!node.is_empty());
+        for key in key {
+            let Some(child) = node.get_child(key) else {
+                break;
+            };
+            node = child;
+            debug_assert!(!node.is_empty());
+        }
+        Some(node)
+    }
+    pub fn get_deepest_leaf<Q>(&self, key: Q) -> Option<Leaf<&K, &V>>
+    where
+        Q: IntoIterator<Item = B>,
+        B: Ord,
+    {
+        let mut node = self.root.as_ref()?;
+        let mut key = key.into_iter();
+        let mut ret = node.as_leaf();
+        debug_assert!(!node.is_empty());
+        loop {
+            let (leaf, child) = node.as_leaf_child(key.next());
+            ret = leaf.or(ret);
+            if let Some(child) = child {
+                node = child;
+                debug_assert!(!node.is_empty());
+            } else {
+                break;
+            }
+        }
+        ret.map(Leaf::as_ref)
+    }
+    pub fn get_deepest_leaf_mut<Q>(&mut self, key: Q) -> Option<Leaf<&K, &mut V>>
+    where
+        Q: IntoIterator<Item = B>,
+        B: Ord,
+    {
+        let mut node = self.root.as_mut()?;
+        let mut key = key.into_iter();
+        let mut ret = None;
+        debug_assert!(!node.is_empty());
+        loop {
+            let (leaf, child) = node.as_leaf_child_mut(key.next());
+            ret = leaf.or(ret);
+            if let Some(child) = child {
+                node = child;
+                debug_assert!(!node.is_empty());
+            } else {
+                break;
+            }
+        }
+        ret.map(Leaf::as_mut)
     }
     pub fn remove<Q>(&mut self, key: Q) -> Option<Leaf<K, V>>
     where
@@ -81,17 +138,12 @@ impl<K, B, V> Trie<K, B, V> {
                 debug_assert!(!node.is_empty());
                 return node.take_leaf();
             };
-            match node.as_branch_mut()?.entry(k) {
-                Entry::Vacant(_) => None,
-                Entry::Occupied(mut child) => {
-                    debug_assert!(!child.get().is_empty());
-                    let ret = remove::<Q, K, B, V>(child.get_mut(), key)?;
-                    if child.get().is_empty() {
-                        child.remove_entry();
-                    }
-                    Some(ret)
-                }
-            }
+            let mut ret = None;
+            node.as_branch_mut()?.remove_if(k, |child| {
+                ret = remove::<Q, K, B, V>(child, key);
+                child.is_empty()
+            });
+            ret
         }
         let ret = remove::<Q, K, B, V>(self.root.as_mut()?, key.into_iter())?;
         self.root.take_if(|node| node.is_empty());
@@ -115,6 +167,7 @@ mod tests {
     fn insert() {
         let mut trie = Trie::default();
         assert_eq!(trie.insert(vec![], ' '), None);
+        assert_eq!(trie.get([]), Some(Leaf::new(&vec![], &' ')));
         assert_eq!(
             trie,
             Trie {
@@ -122,6 +175,7 @@ mod tests {
             }
         );
         assert_eq!(trie.insert(vec![], '_'), Some(Leaf::new(vec![], ' ')));
+        assert_eq!(trie.get([]), Some(Leaf::new(&vec![], &'_')));
         assert_eq!(
             trie,
             Trie {
@@ -131,6 +185,8 @@ mod tests {
         assert_eq!(trie.insert(vec![0], 'O'), None);
         assert_eq!(trie.insert(vec![1], '1'), None);
         assert_eq!(trie.insert(vec![0], '0'), Some(Leaf::new(vec![0], 'O')));
+        assert_eq!(trie.get([0]), Some(Leaf::new(&vec![0], &'0')));
+        assert_eq!(trie.get([1]), Some(Leaf::new(&vec![1], &'1')));
         assert_eq!(
             trie,
             Trie {
@@ -161,5 +217,25 @@ mod tests {
         assert_eq!(trie.remove(vec![1]), Some(Leaf::new(vec![1], '1')));
         assert_eq!(trie, Trie::default());
         assert_eq!(trie.remove(vec![1]), None);
+    }
+    #[test]
+    fn get_deepest_leaf() {
+        let mut trie = Trie::from_iter([(vec![0], "0"), (vec![0; 3], "000"), (vec![0, 1], "01")]);
+        assert_eq!(trie.get_deepest_leaf([]), None);
+        assert_eq!(trie.insert(vec![], ""), None);
+        assert_eq!(trie.get_deepest_leaf([]), Some(Leaf::new(&vec![], &"")));
+        assert_eq!(trie.get_deepest_leaf([0]), Some(Leaf::new(&vec![0], &"0")));
+        assert_eq!(
+            trie.get_deepest_leaf([0, 0]),
+            Some(Leaf::new(&vec![0], &"0"))
+        );
+        assert_eq!(
+            trie.get_deepest_leaf([0; 5]),
+            Some(Leaf::new(&vec![0; 3], &"000"))
+        );
+        assert_eq!(
+            trie.get_deepest_leaf([0, 1]),
+            Some(Leaf::new(&vec![0, 1], &"01"))
+        );
     }
 }
