@@ -1,4 +1,8 @@
+mod branch;
+mod leaf;
 mod node;
+pub use branch::*;
+pub use leaf::*;
 pub use node::*;
 #[derive(Debug, PartialEq)]
 pub struct Trie<K, B, V> {
