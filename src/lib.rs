@@ -42,4 +42,23 @@ pub(crate) mod util {
     ) -> impl FnMut(T) -> V {
         map_chain!(m0, m1)
     }
+    pub trait OptExt {
+        fn invert<U>(self, u: U) -> Option<U>;
+    }
+    impl<T> OptExt for Option<T> {
+        fn invert<U>(self, u: U) -> Option<U> {
+            self.ok_or(u).err()
+        }
+    }
+    pub trait ResExt<T, U> {
+        fn invert(self) -> Result<U, T>;
+    }
+    impl<T, U> ResExt<T, U> for Result<T, U> {
+        fn invert(self) -> Result<U, T> {
+            match self {
+                Ok(t) => Err(t),
+                Err(u) => Ok(u),
+            }
+        }
+    }
 }

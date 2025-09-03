@@ -8,6 +8,7 @@ pub use branch::*;
 pub use leaf::*;
 pub use node::*;
 use slab::Slab;
+use std::cmp::Ordering;
 pub(crate) use walk::*;
 #[derive(Debug)]
 pub struct Trie<K, B, V> {
@@ -160,27 +161,25 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord + Clone,
     {
-        fn remove<Q, K, B, V>(
-            shared: &mut Slab<Node<K, B, V>>,
-            mut node: Handle<Node<K, B, V>>,
-            mut key: Q::IntoIter,
-        ) -> Option<Leaf<K, V>>
-        where
-            Q: IntoIterator<Item = B>,
-            B: Ord + Clone,
-        {
-            let Some(k) = key.next() else {
-                debug_assert!(!node.get(shared).is_empty());
-                return node.get_mut(shared).take_leaf();
-            };
-            let mut ret = None;
+        let key = Vec::from_iter(key);
+        let mut walk = Walk::start(&self.root, key.iter().cloned());
+        let mut track = Vec::with_capacity(key.len());
+        while let Some(node) = walk.next_by_key(&self.shared) {
+            track.push(node);
+        }
+        match track.len().cmp(&(key.len() + 1)) {
+            Ordering::Less => return None,
+            Ordering::Equal => (),
+            Ordering::Greater => unreachable!(),
+        }
+        let ret = track.pop()?.get_mut(&mut self.shared).take_leaf();
+        for (k, mut node) in key.into_iter().zip(track.into_iter().rev()) {
             node.remove_if(
-                shared,
+                &mut self.shared,
                 {
                     let k = k.clone();
                     |node, shared| {
                         let child = node.get(shared).as_branch()?.get_handle(k)?.leak();
-                        ret = remove::<Q, K, B, V>(shared, child.leak(), key);
                         child.get(shared).is_empty().then_some(child)
                     }
                 },
@@ -194,15 +193,8 @@ impl<K, B, V> Trie<K, B, V> {
                     assert_eq!(child, c);
                 },
             );
-            ret
         }
-        let ret = remove::<Q, K, B, V>(
-            &mut self.shared,
-            self.root.as_ref().map(Handle::leak)?,
-            key.into_iter(),
-        )?;
-        self.root.take_if(|node| node.get(&self.shared).is_empty());
-        Some(ret)
+        ret
     }
     pub fn iter(&self) -> impl Iterator<Item = Leaf<&K, &V>> {
         let mut walk = Walk::start(&self.root, ());
