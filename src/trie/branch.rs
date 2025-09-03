@@ -101,7 +101,12 @@ impl<K, B, V> Branch<K, B, V> {
             }
         }
     }
-    pub fn iter(&self) -> std::collections::btree_map::Iter<B, Handle<Node<K, B, V>>> {
+    pub fn children(&self) -> Children<K, B, V> {
+        self.0.values()
+    }
+    pub fn iter(&self) -> Iter<K, B, V> {
         self.0.iter()
     }
 }
+pub type Children<'a, K, B, V> = std::collections::btree_map::Values<'a, B, Handle<Node<K, B, V>>>;
+pub type Iter<'a, K, B, V> = std::collections::btree_map::Iter<'a, B, Handle<Node<K, B, V>>>;

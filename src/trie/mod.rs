@@ -2,12 +2,13 @@ mod branch;
 pub mod handle;
 mod leaf;
 mod node;
-
+mod walk;
 use crate::handle::Handle;
 pub use branch::*;
 pub use leaf::*;
 pub use node::*;
 use slab::Slab;
+pub(crate) use walk::*;
 #[derive(Debug)]
 pub struct Trie<K, B, V> {
     root: Option<Handle<Node<K, B, V>>>,
@@ -15,7 +16,7 @@ pub struct Trie<K, B, V> {
 }
 impl<K: PartialEq, B, V: PartialEq> PartialEq for Trie<K, B, V> {
     fn eq(&self, other: &Self) -> bool {
-        self.iter().zip(other.iter()).take(10).all(|(a, b)| a == b)
+        self.iter().zip(other.iter()).all(|(a, b)| a == b)
     }
 }
 impl<K, B, V> Default for Trie<K, B, V> {
@@ -80,15 +81,17 @@ impl<K, B, V> Trie<K, B, V> {
         }
         node.get_mut(&mut self.shared).make_leaf(key, value)
     }
+
     pub fn get<Q>(&self, key: Q) -> Option<Leaf<&K, &V>>
     where
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_ref().map(Handle::leak)?;
+        let mut walk = Walk::start(&self.root, key.into_iter());
+        let mut node = walk.next_by_key(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        for key in key {
-            node = node.get(&self.shared).get_child_handle(key)?.leak();
+        while let Some(n) = walk.next_by_key(&self.shared) {
+            node = n;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
         node.get(&self.shared).as_leaf().map(Leaf::as_ref)
@@ -223,60 +226,30 @@ impl<K, B, V> Trie<K, B, V> {
         Some(ret)
     }
     pub fn iter(&self) -> impl Iterator<Item = Leaf<&K, &V>> {
-        let mut stack = Vec::from_iter(self.root.as_ref().map(Handle::leak));
-        #[cfg(debug_assertions)]
-        let mut visited: std::collections::HashSet<
-            Handle<Node<K, B, V>>,
-            std::hash::RandomState,
-        > = std::collections::HashSet::from_iter(self.root.as_ref().map(Handle::leak));
+        let mut walk = Walk::start(&self.root, ());
         std::iter::from_fn(move || {
             loop {
-                let node = stack.pop()?;
-                let (leaf, branch) = node.get(&self.shared).as_leaf_branch();
-                for x in branch
-                    .into_iter()
-                    .flat_map(Branch::iter)
-                    .rev()
-                    .map(|(_, x)| x.leak())
-                {
-                    debug_assert!(visited.insert(x.leak()));
-                    stack.push(x);
+                let node = walk.next(&self.shared)?;
+                if let Some(leaf) = node.get(&self.shared).as_leaf() {
+                    break Some(leaf.as_ref());
                 }
-                let Some(leaf) = leaf else {
-                    continue;
-                };
-                break Some(leaf.as_ref());
             }
         })
     }
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = Leaf<&K, &mut V>> {
-        let mut stack = Vec::from_iter(self.root.as_ref().map(Handle::leak));
-        #[cfg(debug_assertions)]
-        let mut visited: std::collections::HashSet<
-            Handle<Node<K, B, V>>,
-            std::hash::RandomState,
-        > = std::collections::HashSet::from_iter(self.root.as_ref().map(Handle::leak));
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = Leaf<&K, &mut V>>
+    where
+        B: Ord,
+    {
+        let mut walk = Walk::start(&self.root, ());
         std::iter::from_fn(move || {
             loop {
-                let node = stack.pop()?;
-                let (leaf, branch) = node.get_mut(&mut self.shared).as_leaf_branch_mut();
-                for x in branch
-                    .into_iter()
-                    .flat_map(|b| b.iter())
-                    .rev()
-                    .map(|(_, x)| x.leak())
-                {
-                    debug_assert!(visited.insert(x.leak()));
-                    stack.push(x);
+                let node = walk.next(&self.shared)?;
+                if let Some(leaf) = node.get_mut(&mut self.shared).as_leaf_mut() {
+                    // SAFETY - Lifetime extension
+                    // We hold exclusive access to self and therefore shared and always return disjoint entries.
+                    // This invariant is explicitly checked in debug builds where it will then panic.
+                    break Some(unsafe { std::mem::transmute(leaf.as_mut()) });
                 }
-                let Some(leaf) = leaf else {
-                    continue;
-                };
-                // SAFETY
-                // We hold self and therefore shared as mutable and always return disjoint entries.
-                // This invariant is explicitly checked in debug builds where it will then panic.
-                let leaf = unsafe { std::mem::transmute(leaf.as_mut()) };
-                break Some(leaf);
             }
         })
     }

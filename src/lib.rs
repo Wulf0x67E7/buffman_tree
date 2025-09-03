@@ -11,15 +11,27 @@ mod tests {
 }
 
 #[allow(dead_code)]
+#[macro_use]
 pub(crate) mod util {
     pub fn unzipped<A, B, R, F: FnMut(A, B) -> R>(mut f: F) -> impl FnMut((A, B)) -> R {
         move |(a, b)| f(a, b)
     }
+    #[macro_export]
     macro_rules! map_chain {
-        ($($f:tt),*$(,)?) => {
+        ($($f:expr),*$(,)?) => {
             move |x| {
                 let v = x;
                 $(let v = $f(v);)*
+                v
+            }
+        };
+    }
+    #[macro_export]
+    macro_rules! flat_map_chain {
+        ($($f:expr),*$(,)?) => {
+            move |x| {
+                let v = x;
+                $(let v = $f(v)?;)*
                 v
             }
         };
