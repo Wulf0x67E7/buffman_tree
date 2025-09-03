@@ -101,10 +101,11 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_ref().map(Handle::leak)?;
+        let mut walk = Walk::start(&self.root, key.into_iter());
+        let mut node = walk.next_by_key(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        for key in key {
-            node = node.get(&self.shared).get_child_handle(key)?.leak();
+        while let Some(n) = walk.next_by_key(&self.shared) {
+            node = n;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
         node.get_mut(&mut self.shared)
@@ -116,13 +117,11 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_ref().map(Handle::leak)?;
+        let mut walk = Walk::start(&self.root, key.into_iter());
+        let mut node = walk.next_by_key(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        for key in key {
-            let Some(child) = node.get(&self.shared).get_child_handle(key) else {
-                break;
-            };
-            node = child.leak();
+        while let Some(n) = walk.next_by_key(&self.shared) {
+            node = n;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
         Some(node.get(&self.shared))
@@ -132,44 +131,24 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_ref().map(Handle::leak)?;
-        let mut key = key.into_iter();
-        let mut ret = node.get(&self.shared).as_leaf();
-        debug_assert!(!node.get(&self.shared).is_empty());
-        loop {
-            let (leaf, child) = node.get(&self.shared).as_leaf_child_handle(key.next());
-            ret = leaf.or(ret);
-            if let Some(child) = child {
-                node = child.leak();
-                debug_assert!(!node.get(&self.shared).is_empty());
-            } else {
-                break;
-            }
+        let mut walk = Walk::start(&self.root, key.into_iter());
+        let mut node = None;
+        while let Some(n) = walk.next_by_key(&self.shared) {
+            node = n.get(&self.shared).as_leaf().or(node);
         }
-        ret.map(Leaf::as_ref)
+        node.map(Leaf::as_ref)
     }
     pub fn get_deepest_leaf_mut<Q>(&mut self, key: Q) -> Option<Leaf<&K, &mut V>>
     where
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_ref().map(Handle::leak)?;
-        let mut key = key.into_iter();
-        let mut ret = node.get(&self.shared).as_leaf().map(|_| node.leak());
-        debug_assert!(!node.get(&self.shared).is_empty());
-        loop {
-            let (leaf, child) = node
-                .get_mut(&mut self.shared)
-                .as_leaf_child_handle_mut(key.next());
-            ret = leaf.map(|_| node).or(ret);
-            if let Some(child) = child {
-                node = child.leak();
-                debug_assert!(!node.get(&self.shared).is_empty());
-            } else {
-                break;
-            }
+        let mut walk = Walk::start(&self.root, key.into_iter());
+        let mut node = None;
+        while let Some(n) = walk.next_by_key(&self.shared) {
+            node = n.get(&self.shared).as_leaf().map(|_| n).or(node);
         }
-        ret.map(|node| {
+        node.map(|node| {
             node.get_mut(&mut self.shared)
                 .as_leaf_mut()
                 .unwrap()
