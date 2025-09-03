@@ -3,6 +3,11 @@ pub struct Leaf<K, V> {
     key: K,
     value: V,
 }
+impl<K: From<L>, V: From<W>, L, W> From<(L, W)> for Leaf<K, V> {
+    fn from((key, value): (L, W)) -> Self {
+        Self::new(key, value)
+    }
+}
 impl<K, V> Leaf<K, V> {
     pub fn new<L, W>(key: L, value: W) -> Self
     where

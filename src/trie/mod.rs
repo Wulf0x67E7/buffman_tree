@@ -1,16 +1,29 @@
 mod branch;
+pub mod handle;
 mod leaf;
 mod node;
+
+use crate::handle::Handle;
 pub use branch::*;
 pub use leaf::*;
 pub use node::*;
-#[derive(Debug, PartialEq)]
+use slab::Slab;
+#[derive(Debug)]
 pub struct Trie<K, B, V> {
-    root: Option<Node<K, B, V>>,
+    root: Option<Handle<Node<K, B, V>>>,
+    shared: Slab<Node<K, B, V>>,
+}
+impl<K: PartialEq, B, V: PartialEq> PartialEq for Trie<K, B, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().zip(other.iter()).take(10).all(|(a, b)| a == b)
+    }
 }
 impl<K, B, V> Default for Trie<K, B, V> {
     fn default() -> Self {
-        Self { root: None }
+        Self {
+            root: None,
+            shared: Slab::new(),
+        }
     }
 }
 impl<K, B, V> FromIterator<(K, V)> for Trie<K, B, V>
@@ -29,7 +42,14 @@ where
 }
 impl<K, B, V> Trie<K, B, V> {
     pub fn is_empty(&self) -> bool {
-        debug_assert!(!self.root.as_ref().map(Node::is_empty).unwrap_or(false));
+        debug_assert!(
+            !self
+                .root
+                .as_ref()
+                .map(|h| h.get(&self.shared))
+                .map(Node::is_empty)
+                .unwrap_or(false)
+        );
         self.root.is_none()
     }
     pub fn insert(&mut self, key: K, value: V) -> Option<Leaf<K, V>>
@@ -38,69 +58,87 @@ impl<K, B, V> Trie<K, B, V> {
         for<'a> &'a K: IntoIterator<Item = &'a B>,
         B: Ord + Clone,
     {
-        let mut node = self.root.get_or_insert_default();
-        for key in &key {
-            node = node.insert_child(key.clone());
+        let mut node = self
+            .root
+            .get_or_insert_with(|| Handle::new_default(&mut self.shared))
+            .leak();
+        for key in key.into_iter().cloned() {
+            node = node.insert_if(
+                &mut self.shared,
+                {
+                    let key = key.clone();
+                    |node| {
+                        node.get_child_handle(key)
+                            .map(Handle::leak)
+                            .ok_or_else(|| Node::default())
+                    }
+                },
+                |node, handle| {
+                    node.insert_child_handle(key, handle.leak());
+                },
+            );
         }
-        node.make_leaf(key, value)
+        node.get_mut(&mut self.shared).make_leaf(key, value)
     }
     pub fn get<Q>(&self, key: Q) -> Option<Leaf<&K, &V>>
     where
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_ref()?;
-        debug_assert!(!node.is_empty());
+        let mut node = self.root.as_ref().map(Handle::leak)?;
+        debug_assert!(!node.get(&self.shared).is_empty());
         for key in key {
-            node = node.get_child(key)?;
-            debug_assert!(!node.is_empty());
+            node = node.get(&self.shared).get_child_handle(key)?.leak();
+            debug_assert!(!node.get(&self.shared).is_empty());
         }
-        node.as_leaf().map(Leaf::as_ref)
+        node.get(&self.shared).as_leaf().map(Leaf::as_ref)
     }
     pub fn get_mut<Q>(&mut self, key: Q) -> Option<Leaf<&K, &mut V>>
     where
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_mut()?;
-        debug_assert!(!node.is_empty());
+        let mut node = self.root.as_ref().map(Handle::leak)?;
+        debug_assert!(!node.get(&self.shared).is_empty());
         for key in key {
-            node = node.get_child_mut(key)?;
-            debug_assert!(!node.is_empty());
+            node = node.get(&self.shared).get_child_handle(key)?.leak();
+            debug_assert!(!node.get(&self.shared).is_empty());
         }
-        node.as_leaf_mut().map(Leaf::as_mut)
+        node.get_mut(&mut self.shared)
+            .as_leaf_mut()
+            .map(Leaf::as_mut)
     }
     pub fn get_deepest<Q>(&self, key: Q) -> Option<&Node<K, B, V>>
     where
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_ref()?;
-        debug_assert!(!node.is_empty());
+        let mut node = self.root.as_ref().map(Handle::leak)?;
+        debug_assert!(!node.get(&self.shared).is_empty());
         for key in key {
-            let Some(child) = node.get_child(key) else {
+            let Some(child) = node.get(&self.shared).get_child_handle(key) else {
                 break;
             };
-            node = child;
-            debug_assert!(!node.is_empty());
+            node = child.leak();
+            debug_assert!(!node.get(&self.shared).is_empty());
         }
-        Some(node)
+        Some(node.get(&self.shared))
     }
     pub fn get_deepest_leaf<Q>(&self, key: Q) -> Option<Leaf<&K, &V>>
     where
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_ref()?;
+        let mut node = self.root.as_ref().map(Handle::leak)?;
         let mut key = key.into_iter();
-        let mut ret = node.as_leaf();
-        debug_assert!(!node.is_empty());
+        let mut ret = node.get(&self.shared).as_leaf();
+        debug_assert!(!node.get(&self.shared).is_empty());
         loop {
-            let (leaf, child) = node.as_leaf_child(key.next());
+            let (leaf, child) = node.get(&self.shared).as_leaf_child_handle(key.next());
             ret = leaf.or(ret);
             if let Some(child) = child {
-                node = child;
-                debug_assert!(!node.is_empty());
+                node = child.leak();
+                debug_assert!(!node.get(&self.shared).is_empty());
             } else {
                 break;
             }
@@ -112,58 +150,163 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut node = self.root.as_mut()?;
+        let mut node = self.root.as_ref().map(Handle::leak)?;
         let mut key = key.into_iter();
-        let mut ret = None;
-        debug_assert!(!node.is_empty());
+        let mut ret = node.get(&self.shared).as_leaf().map(|_| node.leak());
+        debug_assert!(!node.get(&self.shared).is_empty());
         loop {
-            let (leaf, child) = node.as_leaf_child_mut(key.next());
-            ret = leaf.or(ret);
+            let (leaf, child) = node
+                .get_mut(&mut self.shared)
+                .as_leaf_child_handle_mut(key.next());
+            ret = leaf.map(|_| node).or(ret);
             if let Some(child) = child {
-                node = child;
-                debug_assert!(!node.is_empty());
+                node = child.leak();
+                debug_assert!(!node.get(&self.shared).is_empty());
             } else {
                 break;
             }
         }
-        ret.map(Leaf::as_mut)
+        ret.map(|node| {
+            node.get_mut(&mut self.shared)
+                .as_leaf_mut()
+                .unwrap()
+                .as_mut()
+        })
     }
     pub fn remove<Q>(&mut self, key: Q) -> Option<Leaf<K, V>>
     where
         Q: IntoIterator<Item = B>,
-        B: Ord,
+        B: Ord + Clone,
     {
-        fn remove<Q, K, B, V>(node: &mut Node<K, B, V>, mut key: Q::IntoIter) -> Option<Leaf<K, V>>
+        fn remove<Q, K, B, V>(
+            shared: &mut Slab<Node<K, B, V>>,
+            mut node: Handle<Node<K, B, V>>,
+            mut key: Q::IntoIter,
+        ) -> Option<Leaf<K, V>>
         where
             Q: IntoIterator<Item = B>,
-            B: Ord,
+            B: Ord + Clone,
         {
             let Some(k) = key.next() else {
-                debug_assert!(!node.is_empty());
-                return node.take_leaf();
+                debug_assert!(!node.get(shared).is_empty());
+                return node.get_mut(shared).take_leaf();
             };
             let mut ret = None;
-            node.as_branch_mut()?.remove_if(k, |child| {
-                ret = remove::<Q, K, B, V>(child, key);
-                child.is_empty()
-            });
+            node.remove_if(
+                shared,
+                {
+                    let k = k.clone();
+                    |node, shared| {
+                        let child = node.get(shared).as_branch()?.get_handle(k)?.leak();
+                        ret = remove::<Q, K, B, V>(shared, child.leak(), key);
+                        child.get(shared).is_empty().then_some(child)
+                    }
+                },
+                |node, shared, child| {
+                    let c = node
+                        .get_mut(shared)
+                        .as_branch_mut()
+                        .unwrap()
+                        .remove(k)
+                        .unwrap();
+                    assert_eq!(child, c);
+                },
+            );
             ret
         }
-        let ret = remove::<Q, K, B, V>(self.root.as_mut()?, key.into_iter())?;
-        self.root.take_if(|node| node.is_empty());
+        let ret = remove::<Q, K, B, V>(
+            &mut self.shared,
+            self.root.as_ref().map(Handle::leak)?,
+            key.into_iter(),
+        )?;
+        self.root.take_if(|node| node.get(&self.shared).is_empty());
         Some(ret)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = Leaf<&K, &V>> {
+        let mut stack = Vec::from_iter(self.root.as_ref().map(Handle::leak));
+        #[cfg(debug_assertions)]
+        let mut visited: std::collections::HashSet<
+            Handle<Node<K, B, V>>,
+            std::hash::RandomState,
+        > = std::collections::HashSet::from_iter(self.root.as_ref().map(Handle::leak));
+        std::iter::from_fn(move || {
+            loop {
+                let node = stack.pop()?;
+                let (leaf, branch) = node.get(&self.shared).as_leaf_branch();
+                for x in branch
+                    .into_iter()
+                    .flat_map(Branch::iter)
+                    .rev()
+                    .map(|(_, x)| x.leak())
+                {
+                    debug_assert!(visited.insert(x.leak()));
+                    stack.push(x);
+                }
+                let Some(leaf) = leaf else {
+                    continue;
+                };
+                break Some(leaf.as_ref());
+            }
+        })
+    }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = Leaf<&K, &mut V>> {
+        let mut stack = Vec::from_iter(self.root.as_ref().map(Handle::leak));
+        #[cfg(debug_assertions)]
+        let mut visited: std::collections::HashSet<
+            Handle<Node<K, B, V>>,
+            std::hash::RandomState,
+        > = std::collections::HashSet::from_iter(self.root.as_ref().map(Handle::leak));
+        std::iter::from_fn(move || {
+            loop {
+                let node = stack.pop()?;
+                let (leaf, branch) = node.get_mut(&mut self.shared).as_leaf_branch_mut();
+                for x in branch
+                    .into_iter()
+                    .flat_map(|b| b.iter())
+                    .rev()
+                    .map(|(_, x)| x.leak())
+                {
+                    debug_assert!(visited.insert(x.leak()));
+                    stack.push(x);
+                }
+                let Some(leaf) = leaf else {
+                    continue;
+                };
+                // SAFETY
+                // We hold self and therefore shared as mutable and always return disjoint entries.
+                // This invariant is explicitly checked in debug builds where it will then panic.
+                let leaf = unsafe { std::mem::transmute(leaf.as_mut()) };
+                break Some(leaf);
+            }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    use std::{
+        collections::BTreeSet,
+        iter::{repeat, zip},
+    };
+
+    use quickcheck_macros::quickcheck;
+
+    use crate::util::unzipped;
+
     use super::*;
 
     #[test]
     fn empty() {
         let trie: Trie<(), (), ()> = Trie::default();
         assert!(trie.is_empty());
-        assert_eq!(trie, Trie { root: None });
+        assert_eq!(
+            trie,
+            Trie {
+                root: None,
+                shared: Slab::default()
+            }
+        );
         assert_eq!(trie.get(Some(())), None);
     }
 
@@ -175,7 +318,8 @@ mod tests {
         assert_eq!(
             trie,
             Trie {
-                root: Some(Node::Leaf(Leaf::new(vec![], ' ')))
+                root: Some(Handle::from(0)),
+                shared: Slab::from_iter([(0, Node::Leaf(Leaf::new(vec![], ' ')))])
             }
         );
         assert_eq!(trie.insert(vec![], '_'), Some(Leaf::new(vec![], ' ')));
@@ -183,7 +327,8 @@ mod tests {
         assert_eq!(
             trie,
             Trie {
-                root: Some(Node::Leaf(Leaf::new(vec![], '_')))
+                root: Some(Handle::from(0)),
+                shared: Slab::from_iter([(0, Node::Leaf(Leaf::new(vec![], '_')))])
             }
         );
         assert_eq!(trie.insert(vec![0], 'O'), None);
@@ -194,13 +339,18 @@ mod tests {
         assert_eq!(
             trie,
             Trie {
-                root: Some(Node::Full(
-                    Leaf::new(vec![], '_'),
-                    Branch::from_iter([
-                        (0, Node::Leaf(Leaf::new(vec![0], '0'))),
-                        (1, Node::Leaf(Leaf::new(vec![1], '1')))
-                    ])
-                ))
+                root: Some(Handle::from(0)),
+                shared: Slab::from_iter([
+                    (
+                        0,
+                        Node::Full(
+                            Leaf::new(vec![], '_'),
+                            Branch::from_iter([(0, Handle::from(1)), (1, Handle::from(2))])
+                        )
+                    ),
+                    (1, Node::Leaf(Leaf::new(vec![0], '0'))),
+                    (2, Node::Leaf(Leaf::new(vec![1], '1')))
+                ])
             }
         );
     }
@@ -240,6 +390,16 @@ mod tests {
         assert_eq!(
             trie.get_deepest_leaf([0, 1]),
             Some(Leaf::new(&vec![0, 1], &"01"))
+        );
+    }
+    #[quickcheck]
+    fn iter_ord(data: BTreeSet<Vec<u8>>) {
+        let trie = Trie::from_iter(data.iter().cloned().zip(repeat(())));
+        let data2 = Vec::from_iter(trie.iter().map(|leaf| leaf.key().to_vec()));
+        assert_eq!(data.len(), data2.len());
+        assert!(
+            zip(&data, &data2).all(unzipped(PartialEq::eq)),
+            "Result is not sorted:\n{data:?}\n{data2:?}"
         );
     }
 }
