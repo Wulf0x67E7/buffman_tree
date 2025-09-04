@@ -1,6 +1,6 @@
 use slab::Slab;
 
-use crate::{Branch, Node, handle::Handle};
+use crate::{Branch, Node, handle::Handle, util::unzipped};
 
 pub struct Walk<K, S, V, F> {
     stack: Vec<Handle<Node<K, S, V>>>,
@@ -41,11 +41,11 @@ impl<K, S, V, F> Walk<K, S, V, F> {
     {
         let node = self.stack.pop()?;
         let branch = node.get(&shared).as_branch();
-        for x in branch.into_iter().flat_map(|branch| {
-            self.filter
-                .next()
-                .and_then(|key| branch.get_handle(key).map(Handle::leak))
-        }) {
+        if let Some(x) = branch
+            .zip(self.filter.next())
+            .and_then(unzipped(Branch::get_handle))
+            .map(Handle::leak)
+        {
             debug_assert!(self.unique.insert(x.leak()));
             self.stack.push(x);
         }

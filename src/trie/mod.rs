@@ -8,12 +8,21 @@ pub use branch::*;
 pub use leaf::*;
 pub use node::*;
 use slab::Slab;
-use std::cmp::Ordering;
+use std::{cmp::Ordering, fmt::Debug};
 pub(crate) use walk::*;
-#[derive(Debug)]
 pub struct Trie<K, B, V> {
     root: Option<Handle<Node<K, B, V>>>,
     shared: Slab<Node<K, B, V>>,
+}
+impl<K: Debug, B: Debug, V: Debug> std::fmt::Debug for Trie<K, B, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut walk = Walk::start(&self.root, ());
+        let mut f = &mut f.debug_struct("Trie");
+        while let Some(node) = walk.next(&self.shared) {
+            f = f.field(&node.to_string(), node.get(&self.shared));
+        }
+        f.finish()
+    }
 }
 impl<K: PartialEq, B, V: PartialEq> PartialEq for Trie<K, B, V> {
     fn eq(&self, other: &Self) -> bool {
@@ -163,7 +172,7 @@ impl<K, B, V> Trie<K, B, V> {
     {
         let key = Vec::from_iter(key);
         let mut walk = Walk::start(&self.root, key.iter().cloned());
-        let mut track = Vec::with_capacity(key.len());
+        let mut track = Vec::with_capacity(key.len() + 1);
         while let Some(node) = walk.next_by_key(&self.shared) {
             track.push(node);
         }
@@ -172,29 +181,45 @@ impl<K, B, V> Trie<K, B, V> {
             Ordering::Equal => (),
             Ordering::Greater => unreachable!(),
         }
-        let ret = track.pop()?.get_mut(&mut self.shared).take_leaf();
-        for (k, mut node) in key.into_iter().zip(track.into_iter().rev()) {
-            node.remove_if(
-                &mut self.shared,
-                {
-                    let k = k.clone();
-                    |node, shared| {
-                        let child = node.get(shared).as_branch()?.get_handle(k)?.leak();
-                        child.get(shared).is_empty().then_some(child)
-                    }
-                },
-                |node, shared, child| {
-                    let c = node
-                        .get_mut(shared)
-                        .as_branch_mut()
-                        .unwrap()
-                        .remove(k)
-                        .unwrap();
-                    assert_eq!(child, c);
-                },
-            );
+        let ret = track.pop()?.get_mut(&mut self.shared).take_leaf()?;
+        'early: {
+            for (k, mut node) in key.into_iter().zip(track.into_iter()).rev() {
+                if let None = node.remove_if(
+                    &mut self.shared,
+                    {
+                        let k = k.clone();
+                        |node, shared| {
+                            let child = node.get(shared).as_branch()?.get_handle(k)?.leak();
+                            child.get(shared).is_empty().then_some(child)
+                        }
+                    },
+                    |node, shared, child| {
+                        let c = node
+                            .get_mut(shared)
+                            .as_branch_mut()
+                            .unwrap()
+                            .remove(k)
+                            .unwrap();
+                        assert_eq!(child, c);
+                    },
+                ) {
+                    break 'early;
+                }
+            }
+            self.root.take_if(|node| node.get(&self.shared).is_empty());
         }
-        ret
+        Some(ret)
+    }
+    pub fn into_iter(mut self) -> impl Iterator<Item = Leaf<K, V>> {
+        let mut walk = Walk::start(&self.root, ());
+        std::iter::from_fn(move || {
+            loop {
+                let node = walk.next(&self.shared)?;
+                if let Some(leaf) = node.get_mut(&mut self.shared).take_leaf() {
+                    break Some(leaf);
+                }
+            }
+        })
     }
     pub fn iter(&self) -> impl Iterator<Item = Leaf<&K, &V>> {
         let mut walk = Walk::start(&self.root, ());
@@ -230,7 +255,7 @@ impl<K, B, V> Trie<K, B, V> {
 mod tests {
 
     use std::{
-        collections::BTreeSet,
+        collections::{BTreeSet, HashSet},
         iter::{repeat, zip},
     };
 
@@ -339,11 +364,33 @@ mod tests {
     #[quickcheck]
     fn iter_ord(data: BTreeSet<Vec<u8>>) {
         let trie = Trie::from_iter(data.iter().cloned().zip(repeat(())));
-        let data2 = Vec::from_iter(trie.iter().map(|leaf| leaf.key().to_vec()));
+        let data2 = Vec::from_iter(trie.into_iter().map(|leaf| leaf.unwrap().0));
         assert_eq!(data.len(), data2.len());
         assert!(
             zip(&data, &data2).all(unzipped(PartialEq::eq)),
             "Result is not sorted:\n{data:?}\n{data2:?}"
         );
+    }
+
+    #[test]
+    fn remove_cleanup_root_full() {
+        let data = HashSet::from_iter([vec![0], vec![]]);
+        _remove_cleanup(data);
+    }
+    #[test]
+    fn remove_cleanup_root_branch() {
+        let data = HashSet::from_iter([vec![0, 2]]);
+        _remove_cleanup(data);
+    }
+    #[quickcheck]
+    fn remove_cleanup(data: HashSet<Vec<u8>>) {
+        _remove_cleanup(data);
+    }
+    fn _remove_cleanup(data: HashSet<Vec<u8>>) {
+        let mut trie = Trie::from_iter(data.iter().cloned().zip(repeat(())));
+        let data2 = Vec::from_iter(data.iter().flat_map(|v| trie.remove(v.iter().cloned())));
+        assert!(trie.is_empty());
+        assert_eq!(trie, Trie::default());
+        assert_eq!(data.len(), data2.len());
     }
 }

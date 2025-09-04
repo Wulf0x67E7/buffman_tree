@@ -1,13 +1,21 @@
 use slab::Slab;
 
 use crate::{Node, handle::Handle, util::unzipped};
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    fmt::Debug,
+};
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct Branch<K, B, V>(BTreeMap<B, Handle<Node<K, B, V>>>);
 impl<K, B, V> Default for Branch<K, B, V> {
     fn default() -> Self {
         Self(Default::default())
+    }
+}
+impl<K: Debug, B: Debug, V: Debug> Debug for Branch<K, B, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 impl<K, B, V> FromIterator<(B, Handle<Node<K, B, V>>)> for Branch<K, B, V>
