@@ -22,8 +22,8 @@ impl<K, B, V> Node<K, B, V> {
     pub fn is_empty(&self) -> bool {
         match self {
             Node::None => true,
-            Node::Leaf(_) => false,
-            Node::Branch(branch) | Node::Full(_, branch) => branch.is_empty(),
+            Node::Leaf(_) | Node::Full(_, _) => false,
+            Node::Branch(branch) => branch.is_empty(),
         }
     }
     pub fn as_branch(&self) -> Option<&Branch<K, B, V>> {
@@ -114,7 +114,7 @@ impl<K, B, V> Node<K, B, V> {
     where
         K: PartialEq,
     {
-        let new = Leaf::new(key, value);
+        let new = Leaf::from(key, value);
         match self {
             Node::None => {
                 *self = Node::Leaf(new);
