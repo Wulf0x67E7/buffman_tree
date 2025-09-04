@@ -16,7 +16,7 @@ pub struct Trie<K, B, V> {
 }
 impl<K: Debug, B: Debug, V: Debug> std::fmt::Debug for Trie<K, B, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut walk = Walk::start(&self.root, ());
+        let mut walk = Walk::start(&self.root, Ordered);
         let mut f = &mut f.debug_struct("Trie");
         while let Some(node) = walk.next(&self.shared) {
             f = f.field(&node.to_string(), node.get(&self.shared));
@@ -97,10 +97,10 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut walk = Walk::start(&self.root, key.into_iter());
-        let mut node = walk.next_by_key(&self.shared)?;
+        let mut walk = Walk::start(&self.root, Keyed::from(key));
+        let mut node = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        while let Some(n) = walk.next_by_key(&self.shared) {
+        while let Some(n) = walk.next(&self.shared) {
             node = n;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
@@ -111,10 +111,10 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut walk = Walk::start(&self.root, key.into_iter());
-        let mut node = walk.next_by_key(&self.shared)?;
+        let mut walk = Walk::start(&self.root, Keyed::from(key));
+        let mut node = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        while let Some(n) = walk.next_by_key(&self.shared) {
+        while let Some(n) = walk.next(&self.shared) {
             node = n;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
@@ -127,10 +127,10 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut walk = Walk::start(&self.root, key.into_iter());
-        let mut node = walk.next_by_key(&self.shared)?;
+        let mut walk = Walk::start(&self.root, Keyed::from(key));
+        let mut node = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        while let Some(n) = walk.next_by_key(&self.shared) {
+        while let Some(n) = walk.next(&self.shared) {
             node = n;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
@@ -141,9 +141,9 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut walk = Walk::start(&self.root, key.into_iter());
+        let mut walk = Walk::start(&self.root, Keyed::from(key));
         let mut node = None;
-        while let Some(n) = walk.next_by_key(&self.shared) {
+        while let Some(n) = walk.next(&self.shared) {
             node = n.get(&self.shared).as_leaf().or(node);
         }
         node.map(Leaf::as_ref)
@@ -153,9 +153,9 @@ impl<K, B, V> Trie<K, B, V> {
         Q: IntoIterator<Item = B>,
         B: Ord,
     {
-        let mut walk = Walk::start(&self.root, key.into_iter());
+        let mut walk = Walk::start(&self.root, Keyed::from(key));
         let mut node = None;
-        while let Some(n) = walk.next_by_key(&self.shared) {
+        while let Some(n) = walk.next(&self.shared) {
             node = n.get(&self.shared).as_leaf().map(|_| n).or(node);
         }
         node.map(|node| {
@@ -171,9 +171,9 @@ impl<K, B, V> Trie<K, B, V> {
         B: Ord + Clone,
     {
         let key = Vec::from_iter(key);
-        let mut walk = Walk::start(&self.root, key.iter().cloned());
+        let mut walk = Walk::start(&self.root, Keyed::from(key.iter().cloned()));
         let mut track = Vec::with_capacity(key.len() + 1);
-        while let Some(node) = walk.next_by_key(&self.shared) {
+        while let Some(node) = walk.next(&self.shared) {
             track.push(node);
         }
         match track.len().cmp(&(key.len() + 1)) {
@@ -211,7 +211,7 @@ impl<K, B, V> Trie<K, B, V> {
         Some(ret)
     }
     pub fn into_iter(mut self) -> impl Iterator<Item = Leaf<K, V>> {
-        let mut walk = Walk::start(&self.root, ());
+        let mut walk = Walk::start(&self.root, Ordered);
         std::iter::from_fn(move || {
             loop {
                 let node = walk.next(&self.shared)?;
@@ -222,7 +222,7 @@ impl<K, B, V> Trie<K, B, V> {
         })
     }
     pub fn iter(&self) -> impl Iterator<Item = Leaf<&K, &V>> {
-        let mut walk = Walk::start(&self.root, ());
+        let mut walk = Walk::start(&self.root, Ordered);
         std::iter::from_fn(move || {
             loop {
                 let node = walk.next(&self.shared)?;
@@ -236,7 +236,7 @@ impl<K, B, V> Trie<K, B, V> {
     where
         B: Ord,
     {
-        let mut walk = Walk::start(&self.root, ());
+        let mut walk = Walk::start(&self.root, Ordered);
         std::iter::from_fn(move || {
             loop {
                 let node = walk.next(&self.shared)?;

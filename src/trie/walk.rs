@@ -2,66 +2,76 @@ use slab::Slab;
 
 use crate::{Branch, Node, handle::Handle, util::unzipped};
 
-pub struct Walk<K, S, V, F> {
+pub struct Walk<K, S, V, W> {
     stack: Vec<Handle<Node<K, S, V>>>,
-    filter: F,
+    way: W,
     #[cfg(debug_assertions)]
     unique: std::collections::HashSet<Handle<Node<K, S, V>>, std::hash::RandomState>,
 }
-impl<K, S, V> Walk<K, S, V, ()> {
-    pub fn next(&mut self, shared: &Slab<Node<K, S, V>>) -> Option<Handle<Node<K, S, V>>> {
-        let node = self.stack.pop()?;
-        let branch = node.get(&shared).as_branch();
-        for x in branch
-            .into_iter()
-            .flat_map(|branch| branch.children().rev().map(Handle::leak))
-        {
-            debug_assert!(self.unique.insert(x.leak()));
-            self.stack.push(x);
-        }
-        Some(node)
+pub trait Way<K, S, V> {
+    fn find(&mut self, branch: &Branch<K, S, V>)
+    -> impl IntoIterator<Item = Handle<Node<K, S, V>>>;
+}
+pub struct Ordered;
+impl<K, S, V> Way<K, S, V> for Ordered {
+    fn find(
+        &mut self,
+        branch: &Branch<K, S, V>,
+    ) -> impl IntoIterator<Item = Handle<Node<K, S, V>>> {
+        branch.children().rev().map(Handle::leak)
     }
 }
-impl<K, S, V, F> Walk<K, S, V, F> {
-    pub fn start(root: &Option<Handle<Node<K, S, V>>>, filter: F) -> Self {
+pub struct Keyed<I>(I);
+impl<T: IntoIterator> From<T> for Keyed<T::IntoIter> {
+    fn from(value: T) -> Self {
+        Self(value.into_iter())
+    }
+}
+impl<K, S: Ord, V, I: Iterator<Item = S>> Way<K, S, V> for Keyed<I> {
+    fn find(
+        &mut self,
+        branch: &Branch<K, S, V>,
+    ) -> impl IntoIterator<Item = Handle<Node<K, S, V>>> {
+        Some(branch)
+            .zip(self.0.next())
+            .and_then(unzipped(Branch::get_handle))
+            .map(Handle::leak)
+    }
+}
+
+pub struct Predicated<P>(P);
+impl<P> From<P> for Predicated<P> {
+    fn from(value: P) -> Self {
+        Self(value)
+    }
+}
+impl<K, S, V, P: FnMut(&Branch<K, S, V>) -> I, I: IntoIterator<Item = Handle<Node<K, S, V>>>>
+    Way<K, S, V> for Predicated<P>
+{
+    fn find(
+        &mut self,
+        branch: &Branch<K, S, V>,
+    ) -> impl IntoIterator<Item = Handle<Node<K, S, V>>> {
+        self.0(branch)
+    }
+}
+impl<K, S, V, W: Way<K, S, V>> Walk<K, S, V, W> {
+    pub fn start(root: &Option<Handle<Node<K, S, V>>>, way: W) -> Self {
         Self {
             stack: Vec::from_iter(root.as_ref().map(Handle::leak)),
-            filter,
+            way,
             #[cfg(debug_assertions)]
             unique: std::collections::HashSet::from_iter(root.as_ref().map(Handle::leak)),
         }
     }
-    pub fn peek(&self) -> Option<Handle<Node<K, S, V>>> {
-        self.stack.last().map(Handle::leak)
-    }
-    pub fn next_by_key(&mut self, shared: &Slab<Node<K, S, V>>) -> Option<Handle<Node<K, S, V>>>
-    where
-        F: Iterator<Item = S>,
-        S: Ord,
-    {
+    pub fn next(&mut self, shared: &Slab<Node<K, S, V>>) -> Option<Handle<Node<K, S, V>>> {
         let node = self.stack.pop()?;
         let branch = node.get(&shared).as_branch();
-        if let Some(x) = branch
-            .zip(self.filter.next())
-            .and_then(unzipped(Branch::get_handle))
-            .map(Handle::leak)
+        for x in branch
+            .map(|branch| self.way.find(branch))
+            .into_iter()
+            .flatten()
         {
-            debug_assert!(self.unique.insert(x.leak()));
-            self.stack.push(x);
-        }
-        Some(node)
-    }
-
-    pub fn next_by_filter<I: IntoIterator<Item = Handle<Node<K, S, V>>>>(
-        &mut self,
-        shared: &Slab<Node<K, S, V>>,
-    ) -> Option<Handle<Node<K, S, V>>>
-    where
-        F: for<'a> FnMut(&'a Branch<K, S, V>) -> I,
-    {
-        let node = self.stack.pop()?;
-        let branch = node.get(&shared).as_branch();
-        for x in branch.into_iter().flat_map(&mut self.filter) {
             debug_assert!(self.unique.insert(x.leak()));
             self.stack.push(x);
         }
