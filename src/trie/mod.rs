@@ -10,11 +10,11 @@ pub use node::*;
 use slab::Slab;
 use std::{cmp::Ordering, fmt::Debug};
 pub(crate) use walk::*;
-pub struct Trie<K, B, V> {
-    root: Option<Handle<Node<K, B, V>>>,
-    shared: Slab<Node<K, B, V>>,
+pub struct Trie<K, S, V> {
+    root: Option<NodeId<K, S, V>>,
+    shared: Slab<Node<K, S, V>>,
 }
-impl<K: Debug, B: Debug, V: Debug> std::fmt::Debug for Trie<K, B, V> {
+impl<K: Debug, S: Debug, V: Debug> std::fmt::Debug for Trie<K, S, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut walk = Walk::start(&self.root, Ordered);
         let mut f = &mut f.debug_struct("Trie");
@@ -24,12 +24,12 @@ impl<K: Debug, B: Debug, V: Debug> std::fmt::Debug for Trie<K, B, V> {
         f.finish()
     }
 }
-impl<K: PartialEq, B, V: PartialEq> PartialEq for Trie<K, B, V> {
+impl<K: PartialEq, S, V: PartialEq> PartialEq for Trie<K, S, V> {
     fn eq(&self, other: &Self) -> bool {
         self.iter().zip(other.iter()).all(|(a, b)| a == b)
     }
 }
-impl<K, B, V> Default for Trie<K, B, V> {
+impl<K, S, V> Default for Trie<K, S, V> {
     fn default() -> Self {
         Self {
             root: None,
@@ -37,11 +37,11 @@ impl<K, B, V> Default for Trie<K, B, V> {
         }
     }
 }
-impl<K, B, V> FromIterator<(K, V)> for Trie<K, B, V>
+impl<K, S, V> FromIterator<(K, V)> for Trie<K, S, V>
 where
     K: PartialEq,
-    for<'a> &'a K: IntoIterator<Item = &'a B>,
-    B: Clone + Ord,
+    for<'a> &'a K: IntoIterator<Item = &'a S>,
+    S: Clone + Ord,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut ret = Self::default();
@@ -51,7 +51,7 @@ where
         ret
     }
 }
-impl<K, B, V> Trie<K, B, V> {
+impl<K, S, V> Trie<K, S, V> {
     pub fn is_empty(&self) -> bool {
         debug_assert!(
             !self
@@ -66,8 +66,8 @@ impl<K, B, V> Trie<K, B, V> {
     pub fn insert(&mut self, key: K, value: V) -> Option<Leaf<K, V>>
     where
         K: PartialEq,
-        for<'a> &'a K: IntoIterator<Item = &'a B>,
-        B: Ord + Clone,
+        for<'a> &'a K: IntoIterator<Item = &'a S>,
+        S: Ord + Clone,
     {
         let mut node = self
             .root
@@ -94,8 +94,8 @@ impl<K, B, V> Trie<K, B, V> {
 
     pub fn get<Q>(&self, key: Q) -> Option<Leaf<&K, &V>>
     where
-        Q: IntoIterator<Item = B>,
-        B: Ord,
+        Q: IntoIterator<Item = S>,
+        S: Ord,
     {
         let mut walk = Walk::start(&self.root, Keyed::from(key));
         let mut node = walk.next(&self.shared)?;
@@ -108,8 +108,8 @@ impl<K, B, V> Trie<K, B, V> {
     }
     pub fn get_mut<Q>(&mut self, key: Q) -> Option<Leaf<&K, &mut V>>
     where
-        Q: IntoIterator<Item = B>,
-        B: Ord,
+        Q: IntoIterator<Item = S>,
+        S: Ord,
     {
         let mut walk = Walk::start(&self.root, Keyed::from(key));
         let mut node = walk.next(&self.shared)?;
@@ -122,10 +122,10 @@ impl<K, B, V> Trie<K, B, V> {
             .as_leaf_mut()
             .map(Leaf::as_mut)
     }
-    pub fn get_deepest<Q>(&self, key: Q) -> Option<&Node<K, B, V>>
+    pub fn get_deepest<Q>(&self, key: Q) -> Option<&Node<K, S, V>>
     where
-        Q: IntoIterator<Item = B>,
-        B: Ord,
+        Q: IntoIterator<Item = S>,
+        S: Ord,
     {
         let mut walk = Walk::start(&self.root, Keyed::from(key));
         let mut node = walk.next(&self.shared)?;
@@ -138,8 +138,8 @@ impl<K, B, V> Trie<K, B, V> {
     }
     pub fn get_deepest_leaf<Q>(&self, key: Q) -> Option<Leaf<&K, &V>>
     where
-        Q: IntoIterator<Item = B>,
-        B: Ord,
+        Q: IntoIterator<Item = S>,
+        S: Ord,
     {
         let mut walk = Walk::start(&self.root, Keyed::from(key));
         let mut node = None;
@@ -150,8 +150,8 @@ impl<K, B, V> Trie<K, B, V> {
     }
     pub fn get_deepest_leaf_mut<Q>(&mut self, key: Q) -> Option<Leaf<&K, &mut V>>
     where
-        Q: IntoIterator<Item = B>,
-        B: Ord,
+        Q: IntoIterator<Item = S>,
+        S: Ord,
     {
         let mut walk = Walk::start(&self.root, Keyed::from(key));
         let mut node = None;
@@ -167,8 +167,8 @@ impl<K, B, V> Trie<K, B, V> {
     }
     pub fn remove<Q>(&mut self, key: Q) -> Option<Leaf<K, V>>
     where
-        Q: IntoIterator<Item = B>,
-        B: Ord + Clone,
+        Q: IntoIterator<Item = S>,
+        S: Ord + Clone,
     {
         let key = Vec::from_iter(key);
         let mut walk = Walk::start(&self.root, Keyed::from(key.iter().cloned()));
@@ -234,7 +234,7 @@ impl<K, B, V> Trie<K, B, V> {
     }
     pub fn iter_mut(&mut self) -> impl Iterator<Item = Leaf<&K, &mut V>>
     where
-        B: Ord,
+        S: Ord,
     {
         let mut walk = Walk::start(&self.root, Ordered);
         std::iter::from_fn(move || {
@@ -254,16 +254,14 @@ impl<K, B, V> Trie<K, B, V> {
 #[cfg(test)]
 mod tests {
 
+    use super::*;
+    use crate::{trie::case::Case, util::unzipped};
+    use quickcheck::TestResult;
+    use quickcheck_macros::quickcheck;
     use std::{
-        collections::{BTreeSet, HashSet},
+        collections::BTreeSet,
         iter::{repeat, zip},
     };
-
-    use quickcheck_macros::quickcheck;
-
-    use crate::util::unzipped;
-
-    use super::*;
 
     #[test]
     fn empty() {
@@ -373,24 +371,89 @@ mod tests {
     }
 
     #[test]
-    fn remove_cleanup_root_full() {
-        let data = HashSet::from_iter([vec![0], vec![]]);
-        _remove_cleanup(data);
-    }
-    #[test]
-    fn remove_cleanup_root_branch() {
-        let data = HashSet::from_iter([vec![0, 2]]);
-        _remove_cleanup(data);
+    fn remove_cleanup() {
+        // found by remove_cleanup_fuzz, now fixed
+        let cases = [Case::from((0, [[0]])), Case::from((0, [[0, 2]]))];
+        let mut success = true;
+        for case in cases {
+            let result = case.clone().check();
+            if result.is_failure() || result.is_error() {
+                success = false;
+                println!("crate::tests::remove_cleanup failed for case: {case:?}");
+            }
+        }
+        assert!(success);
     }
     #[quickcheck]
-    fn remove_cleanup(data: HashSet<Vec<u8>>) {
-        _remove_cleanup(data);
+    fn remove_cleanup_fuzz(data: BTreeSet<Vec<u8>>, shuffle_seed: u64) -> TestResult {
+        Case::from((shuffle_seed, data)).check()
     }
-    fn _remove_cleanup(data: HashSet<Vec<u8>>) {
-        let mut trie = Trie::from_iter(data.iter().cloned().zip(repeat(())));
-        let data2 = Vec::from_iter(data.iter().flat_map(|v| trie.remove(v.iter().cloned())));
-        assert!(trie.is_empty());
-        assert_eq!(trie, Trie::default());
-        assert_eq!(data.len(), data2.len());
+}
+
+#[cfg(test)]
+mod case {
+    use std::{collections::BTreeSet, iter::repeat};
+
+    use quickcheck::TestResult;
+    use rand::{SeedableRng, seq::SliceRandom};
+    use rand_xoshiro::Xoshiro256PlusPlus as Rng;
+
+    use crate::{Leaf, Trie};
+
+    pub type Condition =
+        fn(&Box<[Box<[u8]>]>, &Trie<Box<[u8]>, u8, ()>, &Box<[Box<[u8]>]>) -> Option<String>;
+    macro_rules! cond {
+        (|$arg:ident, $trie:ident, $res:ident| $x:stmt; !$pred:expr => $err:expr) => {
+            #[allow(unused_variables)]
+            |$arg: &Box<[Box<[u8]>]>, $trie: &Trie<Box<[u8]>, u8, ()>, $res: &Box<[Box<[u8]>]>| {
+                $x(!$pred).then(|| format!($err))
+            }
+        };
+    }
+    macro_rules! conditions {
+        (|$arg:ident, $trie:ident, $res:ident|[$( $x:stmt; !$pred:expr => $err:expr ),+$(,)?]) => {
+            [$(cond!(|$arg,$trie,$res| $x; !$pred => $err)),+]
+        };
+    }
+    #[derive(Debug, Clone)]
+    pub struct Case {
+        rng: Rng,
+        values: BTreeSet<Box<[u8]>>,
+    }
+    impl<I> From<(u64, I)> for Case
+    where
+        I: IntoIterator,
+        Box<[u8]>: From<I::Item>,
+    {
+        fn from((seed, values): (u64, I)) -> Self {
+            Self {
+                rng: Rng::seed_from_u64(seed),
+                values: BTreeSet::from_iter(values.into_iter().map(I::Item::into)),
+            }
+        }
+    }
+    impl Case {
+        pub fn check(mut self) -> TestResult {
+            let mut arg = Box::from_iter(self.values);
+            arg.shuffle(&mut self.rng);
+            let mut trie = Trie::from_iter(arg.iter().cloned().zip(repeat(())));
+            arg.shuffle(&mut self.rng);
+            let res = Box::from_iter(
+                arg.iter()
+                    .flat_map(|v| trie.remove(v.iter().cloned()))
+                    .map(Leaf::into_key),
+            );
+            let conditions = conditions!(|arg,trie,res| [
+                (); !trie.is_empty() => "Trie::is_empty == false",
+                let default = Trie::default(); !trie == &default => "{trie:?} != Trie::default() == {default:?}",
+                let (arg_len, res_len) = (arg.len(), res.len()); !arg_len == res_len => "arg_len != res_len --- {arg_len} != {res_len}",
+                (); !arg == res => "arg != res --- {arg:?} != {res:?}",
+            ]);
+            conditions
+                .iter()
+                .find_map(|predicate| predicate(&arg, &trie, &res))
+                .map(TestResult::error)
+                .unwrap_or_else(TestResult::passed)
+        }
     }
 }
