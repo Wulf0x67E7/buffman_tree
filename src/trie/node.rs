@@ -3,19 +3,21 @@ use slab::Slab;
 use crate::{Branch, Leaf, handle::Handle};
 use std::mem::{replace, take};
 
+pub type NodeId<K, S, V> = Handle<Node<K, S, V>>;
+
 #[derive(Debug, PartialEq)]
-pub enum Node<K, B, V> {
+pub enum Node<K, S, V> {
     None,
     Leaf(Leaf<K, V>),
-    Branch(Branch<K, B, V>),
-    Full(Leaf<K, V>, Branch<K, B, V>),
+    Branch(Branch<K, S, V>),
+    Full(Leaf<K, V>, Branch<K, S, V>),
 }
-impl<K, B, V> Default for Node<K, B, V> {
+impl<K, S, V> Default for Node<K, S, V> {
     fn default() -> Self {
         Self::None
     }
 }
-impl<K, B, V> Node<K, B, V> {
+impl<K, S, V> Node<K, S, V> {
     pub fn is_none(&self) -> bool {
         matches!(self, Node::None)
     }
@@ -26,21 +28,21 @@ impl<K, B, V> Node<K, B, V> {
             Node::Branch(branch) => branch.is_empty(),
         }
     }
-    pub fn as_branch(&self) -> Option<&Branch<K, B, V>> {
+    pub fn as_branch(&self) -> Option<&Branch<K, S, V>> {
         if let Self::Branch(branch) | Self::Full(_, branch) = self {
             Some(branch)
         } else {
             None
         }
     }
-    pub fn as_branch_mut(&mut self) -> Option<&mut Branch<K, B, V>> {
+    pub fn as_branch_mut(&mut self) -> Option<&mut Branch<K, S, V>> {
         if let Self::Branch(branch) | Self::Full(_, branch) = self {
             Some(branch)
         } else {
             None
         }
     }
-    pub fn make_branch(&mut self) -> &mut Branch<K, B, V> {
+    pub fn make_branch(&mut self) -> &mut Branch<K, S, V> {
         match self {
             Node::None => {
                 *self = Self::Branch(Branch::default());
@@ -62,37 +64,37 @@ impl<K, B, V> Node<K, B, V> {
             Node::Branch(branch) | Node::Full(_, branch) => branch,
         }
     }
-    pub fn insert_child_handle<'a>(&mut self, key: B, child: Handle<Self>) -> Option<Handle<Self>>
+    pub fn insert_child_handle<'a>(&mut self, key: S, child: Handle<Self>) -> Option<Handle<Self>>
     where
-        B: Ord,
+        S: Ord,
     {
         self.make_branch().insert_handle(key, child)
     }
-    pub fn insert_child<'a>(&mut self, key: B, shared: &'a mut Slab<Self>) -> &'a mut Node<K, B, V>
+    pub fn insert_child<'a>(&mut self, key: S, shared: &'a mut Slab<Self>) -> &'a mut Node<K, S, V>
     where
-        B: Ord,
+        S: Ord,
     {
         self.make_branch().get_or_insert(key, shared)
     }
-    pub fn get_child_handle(&self, key: B) -> Option<&Handle<Self>>
+    pub fn get_child_handle(&self, key: S) -> Option<&Handle<Self>>
     where
-        B: Ord,
+        S: Ord,
     {
         self.as_branch()?.get_handle(key)
     }
-    pub fn get_child<'a>(&self, key: B, shared: &'a Slab<Self>) -> Option<&'a Node<K, B, V>>
+    pub fn get_child<'a>(&self, key: S, shared: &'a Slab<Self>) -> Option<&'a Node<K, S, V>>
     where
-        B: Ord,
+        S: Ord,
     {
         self.as_branch()?.get(key, shared)
     }
     pub fn get_child_mut<'a>(
         &mut self,
-        key: B,
+        key: S,
         shared: &'a mut Slab<Self>,
-    ) -> Option<&'a mut Node<K, B, V>>
+    ) -> Option<&'a mut Node<K, S, V>>
     where
-        B: Ord,
+        S: Ord,
     {
         self.as_branch_mut()?.get_mut(key, shared)
     }
@@ -155,7 +157,7 @@ impl<K, B, V> Node<K, B, V> {
             }
         }
     }
-    pub fn as_leaf_branch(&self) -> (Option<&Leaf<K, V>>, Option<&Branch<K, B, V>>) {
+    pub fn as_leaf_branch(&self) -> (Option<&Leaf<K, V>>, Option<&Branch<K, S, V>>) {
         match self {
             Node::None => (None, None),
             Node::Leaf(leaf) => (Some(leaf), None),
@@ -165,7 +167,7 @@ impl<K, B, V> Node<K, B, V> {
     }
     pub fn as_leaf_branch_mut(
         &mut self,
-    ) -> (Option<&mut Leaf<K, V>>, Option<&mut Branch<K, B, V>>) {
+    ) -> (Option<&mut Leaf<K, V>>, Option<&mut Branch<K, S, V>>) {
         match self {
             Node::None => (None, None),
             Node::Leaf(leaf) => (Some(leaf), None),
@@ -175,10 +177,10 @@ impl<K, B, V> Node<K, B, V> {
     }
     pub fn as_leaf_child_handle(
         &self,
-        key: Option<B>,
+        key: Option<S>,
     ) -> (Option<&Leaf<K, V>>, Option<&Handle<Self>>)
     where
-        B: Ord,
+        S: Ord,
     {
         let (leaf, branch) = self.as_leaf_branch();
         (
@@ -190,10 +192,10 @@ impl<K, B, V> Node<K, B, V> {
     }
     pub fn as_leaf_child_handle_mut(
         &mut self,
-        key: Option<B>,
+        key: Option<S>,
     ) -> (Option<&mut Leaf<K, V>>, Option<&Handle<Self>>)
     where
-        B: Ord,
+        S: Ord,
     {
         let (leaf, branch) = self.as_leaf_branch_mut();
         (
@@ -205,11 +207,11 @@ impl<K, B, V> Node<K, B, V> {
     }
     pub fn as_leaf_child<'a>(
         &self,
-        key: Option<B>,
+        key: Option<S>,
         shared: &'a Slab<Self>,
-    ) -> (Option<&Leaf<K, V>>, Option<&'a Node<K, B, V>>)
+    ) -> (Option<&Leaf<K, V>>, Option<&'a Node<K, S, V>>)
     where
-        B: Ord,
+        S: Ord,
     {
         let (leaf, branch) = self.as_leaf_branch();
         (
@@ -221,11 +223,11 @@ impl<K, B, V> Node<K, B, V> {
     }
     pub fn as_leaf_child_mut<'a>(
         &mut self,
-        key: Option<B>,
+        key: Option<S>,
         shared: &'a mut Slab<Self>,
-    ) -> (Option<&mut Leaf<K, V>>, Option<&'a mut Node<K, B, V>>)
+    ) -> (Option<&mut Leaf<K, V>>, Option<&'a mut Node<K, S, V>>)
     where
-        B: Ord,
+        S: Ord,
     {
         let (leaf, branch) = self.as_leaf_branch_mut();
         (

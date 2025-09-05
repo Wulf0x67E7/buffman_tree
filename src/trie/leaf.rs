@@ -49,6 +49,12 @@ impl<K, V> Leaf<K, V> {
         let Leaf { key, value } = self;
         Leaf { key, value }
     }
+    pub fn into_key(self) -> K {
+        self.key
+    }
+    pub fn into_value(self) -> V {
+        self.value
+    }
     pub fn unwrap(self) -> (K, V) {
         self.into()
     }

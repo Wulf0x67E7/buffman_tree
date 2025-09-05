@@ -1,6 +1,8 @@
 {
     "cSpell.words": [
         "buffman",
-        "quickcheck"
+        "quickcheck",
+        "Seedable",
+        "Xoshiro"
     ]
 }
