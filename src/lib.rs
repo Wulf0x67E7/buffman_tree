@@ -10,9 +10,12 @@ mod tests {
     fn nop() {}
 }
 
+#[doc(hidden)]
 #[allow(dead_code)]
 #[macro_use]
-pub(crate) mod util {
+pub mod util {
+    use std::time::{Duration, Instant};
+
     pub fn unzipped<A, B, R, F: FnMut(A, B) -> R>(mut f: F) -> impl FnMut((A, B)) -> R {
         move |(a, b)| f(a, b)
     }
@@ -60,5 +63,11 @@ pub(crate) mod util {
                 Err(u) => Ok(u),
             }
         }
+    }
+    pub fn time<T>(f: impl FnOnce() -> T) -> (Duration, T) {
+        let start = Instant::now();
+        let ret = f();
+        let time = start.elapsed();
+        (time, ret)
     }
 }

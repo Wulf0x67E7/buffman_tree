@@ -1,28 +1,26 @@
 use slab::Slab;
 
-use crate::{Node, NodeId, handle::Handle, util::unzipped};
+use crate::{Key, Node, NodeId, handle::Handle, util::unzipped};
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, btree_map::Entry},
     fmt::Debug,
 };
 
 #[derive(PartialEq)]
-pub struct Branch<K, S, V>(BTreeMap<S, NodeId<K, S, V>>);
-impl<K, S, V> Default for Branch<K, S, V> {
+pub struct Branch<K: Key, V>(BTreeMap<K::Piece, NodeId<K, V>>);
+impl<K: Key, V> Default for Branch<K, V> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<K: Debug, S: Debug, V: Debug> Debug for Branch<K, S, V> {
+impl<K: Key, V: Debug> Debug for Branch<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
 }
-impl<K, S, V> FromIterator<(S, NodeId<K, S, V>)> for Branch<K, S, V>
-where
-    S: Ord,
-{
-    fn from_iter<T: IntoIterator<Item = (S, NodeId<K, S, V>)>>(iter: T) -> Self {
+impl<K: Key, V> FromIterator<(K::Piece, NodeId<K, V>)> for Branch<K, V> {
+    fn from_iter<T: IntoIterator<Item = (K::Piece, NodeId<K, V>)>>(iter: T) -> Self {
         let mut ret = Self::default();
         for (key, value) in iter {
             ret.0.insert(key, value);
@@ -30,70 +28,57 @@ where
         ret
     }
 }
-impl<K, S, V> Branch<K, S, V> {
+impl<K: Key, V> Branch<K, V> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    pub fn insert_handle(&mut self, key: S, child: NodeId<K, S, V>) -> Option<NodeId<K, S, V>>
-    where
-        S: Ord,
-    {
+    pub fn insert_handle(&mut self, key: K::Piece, child: NodeId<K, V>) -> Option<NodeId<K, V>> {
         self.0.insert(key, child)
     }
     pub fn get_or_insert<'a>(
         &mut self,
-        key: S,
-        shared: &'a mut Slab<Node<K, S, V>>,
-    ) -> &'a mut Node<K, S, V>
-    where
-        S: Ord,
-    {
+        key: K::Piece,
+        shared: &'a mut Slab<Node<K, V>>,
+    ) -> &'a mut Node<K, V> {
         self.0
             .entry(key)
             .or_insert_with(|| Handle::new_default(shared))
             .get_mut(shared)
     }
-    pub fn get_handle(&self, key: S) -> Option<&NodeId<K, S, V>>
+    pub fn get_handle<Q>(&self, key: &Q) -> Option<&NodeId<K, V>>
     where
-        S: Ord,
+        Q: Ord,
+        K::Piece: Borrow<Q>,
     {
-        self.0.get(&key)
+        self.0.get(key)
     }
-    pub fn get<'a>(&self, key: S, shared: &'a Slab<Node<K, S, V>>) -> Option<&'a Node<K, S, V>>
-    where
-        S: Ord,
-    {
-        self.get_handle(key)
+    pub fn get<'a>(&self, key: K::Piece, shared: &'a Slab<Node<K, V>>) -> Option<&'a Node<K, V>> {
+        self.get_handle(&key)
             .zip(Some(shared))
             .map(unzipped(Handle::get))
     }
     pub fn get_mut<'a>(
         &self,
-        key: S,
-        shared: &'a mut Slab<Node<K, S, V>>,
-    ) -> Option<&'a mut Node<K, S, V>>
-    where
-        S: Ord,
-    {
-        self.get_handle(key)
+        key: K::Piece,
+        shared: &'a mut Slab<Node<K, V>>,
+    ) -> Option<&'a mut Node<K, V>> {
+        self.get_handle(&key)
             .zip(Some(shared))
             .map(unzipped(Handle::get_mut))
     }
-    pub fn remove(&mut self, key: S) -> Option<NodeId<K, S, V>>
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<NodeId<K, V>>
     where
-        S: Ord,
+        Q: Ord,
+        K::Piece: Borrow<Q>,
     {
-        self.0.remove(&key)
+        self.0.remove(key)
     }
     pub fn remove_if<'a>(
         &mut self,
-        key: S,
-        shared: &'a mut Slab<Node<K, S, V>>,
-        f: impl FnOnce(&mut Slab<Node<K, S, V>>, &NodeId<K, S, V>) -> bool,
-    ) -> Option<Node<K, S, V>>
-    where
-        S: Ord,
-    {
+        key: K::Piece,
+        shared: &'a mut Slab<Node<K, V>>,
+        f: impl FnOnce(&mut Slab<Node<K, V>>, &NodeId<K, V>) -> bool,
+    ) -> Option<Node<K, V>> {
         match self.0.entry(key) {
             Entry::Vacant(_) => None,
             Entry::Occupied(child) => {
@@ -105,12 +90,15 @@ impl<K, S, V> Branch<K, S, V> {
             }
         }
     }
-    pub fn children(&self) -> Children<K, S, V> {
+    pub fn children(&self) -> Children<K, V> {
         self.0.values()
     }
-    pub fn iter(&self) -> Iter<K, S, V> {
+    pub fn iter(&self) -> Iter<K, V> {
         self.0.iter()
     }
 }
-pub type Children<'a, K, B, V> = std::collections::btree_map::Values<'a, B, Handle<Node<K, B, V>>>;
-pub type Iter<'a, K, B, V> = std::collections::btree_map::Iter<'a, B, Handle<Node<K, B, V>>>;
+#[allow(type_alias_bounds)]
+pub type Children<'a, K: Key, V> =
+    std::collections::btree_map::Values<'a, K::Piece, Handle<Node<K, V>>>;
+#[allow(type_alias_bounds)]
+pub type Iter<'a, K: Key, V> = std::collections::btree_map::Iter<'a, K::Piece, Handle<Node<K, V>>>;
