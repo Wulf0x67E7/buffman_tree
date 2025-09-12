@@ -88,7 +88,7 @@ impl<K: Key, V> Trie<K, V> {
     where
         Q: Key<Piece = K::Piece>,
     {
-        let mut walk = Walk::start(&self.root, Keyed::from(key));
+        let mut walk = Walk::start(&self.root, keyed(&key));
         let mut node = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
         while let Some(n) = walk.next(&self.shared) {
@@ -101,7 +101,7 @@ impl<K: Key, V> Trie<K, V> {
     where
         Q: Key<Piece = K::Piece>,
     {
-        let mut walk = Walk::start(&self.root, Keyed::from(key));
+        let mut walk = Walk::start(&self.root, keyed(&key));
         let mut node = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
         while let Some(n) = walk.next(&self.shared) {
@@ -116,7 +116,7 @@ impl<K: Key, V> Trie<K, V> {
     where
         Q: Key<Piece = K::Piece>,
     {
-        let mut walk = Walk::start(&self.root, Keyed::from(key));
+        let mut walk = Walk::start(&self.root, keyed(&key));
         let mut node = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
         while let Some(n) = walk.next(&self.shared) {
@@ -125,22 +125,22 @@ impl<K: Key, V> Trie<K, V> {
         }
         Some(node.get(&self.shared))
     }
-    pub fn get_deepest_leaf<Q>(&self, key: Q) -> Option<Leaf<&K, &V>>
+    pub fn get_deepest_leaf<Q>(&self, key: &Q) -> Option<Leaf<&K, &V>>
     where
         Q: Key<Piece = K::Piece>,
     {
-        let mut walk = Walk::start(&self.root, Keyed::from(key));
+        let mut walk = Walk::start(&self.root, keyed(key));
         let mut node = None;
         while let Some(n) = walk.next(&self.shared) {
             node = n.get(&self.shared).as_leaf().or(node);
         }
         node.map(Leaf::as_ref)
     }
-    pub fn get_deepest_leaf_mut<Q>(&mut self, key: Q) -> Option<Leaf<&K, &mut V>>
+    pub fn get_deepest_leaf_mut<Q>(&mut self, key: &Q) -> Option<Leaf<&K, &mut V>>
     where
         Q: Key<Piece = K::Piece>,
     {
-        let mut walk = Walk::start(&self.root, Keyed::from(key));
+        let mut walk = Walk::start(&self.root, keyed(key));
         let mut node = None;
         while let Some(n) = walk.next(&self.shared) {
             node = n.get(&self.shared).as_leaf().map(|_| n).or(node);
@@ -152,13 +152,13 @@ impl<K: Key, V> Trie<K, V> {
                 .as_mut()
         })
     }
-    pub fn remove<Q>(&mut self, key: Q) -> Option<Leaf<K, V>>
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<Leaf<K, V>>
     where
         Q: Key,
         K::Piece: Borrow<Q::Piece>,
     {
-        let key = Vec::from_iter(key.into_pieces());
-        let mut walk = Walk::start(&self.root, Keyed::from(key.clone()));
+        let key = Vec::from_iter(key.pieces().cloned());
+        let mut walk = Walk::start(&self.root, keyed(&key));
         let mut track = Vec::with_capacity(key.len() + 1);
         while let Some(node) = walk.next(&self.shared) {
             track.push(node);
@@ -170,7 +170,7 @@ impl<K: Key, V> Trie<K, V> {
         }
         let ret = track.pop()?.get_mut(&mut self.shared).take_leaf()?;
         'early: {
-            for (k, mut node) in key.into_iter().zip(track.into_iter()).rev() {
+            for (k, mut node) in key.iter().zip(track.into_iter()).rev() {
                 if let None = node.remove_if(
                     &mut self.shared,
                     |node, shared| {
@@ -313,35 +313,35 @@ mod tests {
         trie.insert(vec![], ' ');
         trie.insert(vec![0], '0');
         trie.insert(vec![1], '1');
-        assert_eq!(trie.remove(vec![2]), None);
-        assert_eq!(trie.remove(vec![0, 0]), None);
-        assert_eq!(trie.remove(vec![0]), Some(Leaf::new(vec![0], '0')));
+        assert_eq!(trie.remove(&[2]), None);
+        assert_eq!(trie.remove(&[0, 0]), None);
+        assert_eq!(trie.remove(&[0]), Some(Leaf::new(vec![0], '0')));
         assert_eq!(trie, Trie::from_iter([(vec![], ' '), (vec![1], '1')]));
-        assert_eq!(trie.remove(vec![0]), None);
-        assert_eq!(trie.remove(vec![]), Some(Leaf::new(vec![], ' ')));
+        assert_eq!(trie.remove(&[0]), None);
+        assert_eq!(trie.remove(&[]), Some(Leaf::new(vec![], ' ')));
         assert_eq!(trie, Trie::from_iter([(vec![1], '1')]));
-        assert_eq!(trie.remove(vec![]), None);
-        assert_eq!(trie.remove(vec![1]), Some(Leaf::new(vec![1], '1')));
+        assert_eq!(trie.remove(&[]), None);
+        assert_eq!(trie.remove(&[1]), Some(Leaf::new(vec![1], '1')));
         assert_eq!(trie, Trie::default());
-        assert_eq!(trie.remove(vec![1]), None);
+        assert_eq!(trie.remove(&[1]), None);
     }
     #[test]
     fn get_deepest_leaf() {
         let mut trie = Trie::from_iter([(vec![0], "0"), (vec![0; 3], "000"), (vec![0, 1], "01")]);
-        assert_eq!(trie.get_deepest_leaf([]), None);
+        assert_eq!(trie.get_deepest_leaf(&[]), None);
         assert_eq!(trie.insert(vec![], ""), None);
-        assert_eq!(trie.get_deepest_leaf([]), Some(Leaf::new(&vec![], &"")));
-        assert_eq!(trie.get_deepest_leaf([0]), Some(Leaf::new(&vec![0], &"0")));
+        assert_eq!(trie.get_deepest_leaf(&[]), Some(Leaf::new(&vec![], &"")));
+        assert_eq!(trie.get_deepest_leaf(&[0]), Some(Leaf::new(&vec![0], &"0")));
         assert_eq!(
-            trie.get_deepest_leaf([0, 0]),
+            trie.get_deepest_leaf(&[0, 0]),
             Some(Leaf::new(&vec![0], &"0"))
         );
         assert_eq!(
-            trie.get_deepest_leaf([0; 5]),
+            trie.get_deepest_leaf(&[0; 5]),
             Some(Leaf::new(&vec![0; 3], &"000"))
         );
         assert_eq!(
-            trie.get_deepest_leaf([0, 1]),
+            trie.get_deepest_leaf(&[0, 1]),
             Some(Leaf::new(&vec![0, 1], &"01"))
         );
     }

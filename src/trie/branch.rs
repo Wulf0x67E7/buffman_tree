@@ -45,7 +45,7 @@ impl<K: Key, V> Branch<K, V> {
             .or_insert_with(|| Handle::new_default(shared))
             .get_mut(shared)
     }
-    pub fn get_handle<Q>(&self, key: &Q) -> Option<&NodeId<K, V>>
+    pub fn get_handle<Q: ?Sized>(&self, key: &Q) -> Option<&NodeId<K, V>>
     where
         Q: Ord,
         K::Piece: Borrow<Q>,

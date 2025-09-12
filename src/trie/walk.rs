@@ -1,4 +1,4 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, ops::Deref};
 
 use slab::Slab;
 
@@ -20,12 +20,20 @@ impl<K: Key, V> Way<K, V> for Ordered {
     }
 }
 pub struct Keyed<I>(I);
-impl<T: Key> From<T> for Keyed<T::IntoPieces> {
-    fn from(value: T) -> Self {
-        Self(value.into_pieces())
+pub fn keyed<K: Key>(key: &K) -> Keyed<impl Iterator<Item = &K::Piece>> {
+    Keyed::wrap(key.pieces())
+}
+impl<T> Keyed<T> {
+    pub fn wrap(value: T) -> Self {
+        Self(value)
     }
 }
-impl<K: Key<Piece: Borrow<Q::Item>>, V, Q: Iterator<Item: Ord>> Way<K, V> for Keyed<Q> {
+impl<
+    K: Key<Piece: Borrow<<Q::Item as Deref>::Target>>,
+    V,
+    Q: Iterator<Item: Deref<Target: ?Sized + Ord>>,
+> Way<K, V> for Keyed<Q>
+{
     fn find(&mut self, branch: &Branch<K, V>) -> impl IntoIterator<Item = NodeId<K, V>> {
         Some(branch)
             .zip(self.0.next())
@@ -64,6 +72,7 @@ impl<K: Key, V, W: Way<K, V>> Walk<K, V, W> {
             .into_iter()
             .flatten()
         {
+            #[cfg(debug_assertions)]
             debug_assert!(self.unique.insert(x.leak()));
             self.stack.push(x);
         }

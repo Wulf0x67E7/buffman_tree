@@ -65,11 +65,7 @@ impl Case {
         arg.shuffle(&mut self.rng);
         let mut trie = Trie::from_iter(arg.iter().cloned().zip(repeat(())));
         arg.shuffle(&mut self.rng);
-        let res = Box::from_iter(
-            arg.iter()
-                .flat_map(|v| trie.remove(v.clone()))
-                .map(Leaf::into_key),
-        );
+        let res = Box::from_iter(arg.iter().flat_map(|v| trie.remove(v)).map(Leaf::into_key));
         let conditions = conditions!(|arg,trie,res| [
             (); !trie.is_empty() => "Trie::is_empty == false",
             let default = Trie::default(); !trie == &default => "{trie:?} != Trie::default() == {default:?}",

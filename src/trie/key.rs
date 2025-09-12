@@ -6,7 +6,7 @@ pub trait Key: Debug + PartialEq {
     type IntoPieces: Debug + Iterator<Item = Self::Piece>;
     fn into_pieces(self) -> Self::IntoPieces;
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 #[repr(transparent)]
 pub struct ByteString(pub String);
 impl From<String> for ByteString {
