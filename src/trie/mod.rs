@@ -10,7 +10,7 @@ pub use key::*;
 pub use leaf::*;
 pub use node::*;
 use slab::Slab;
-use std::{borrow::Borrow, cmp::Ordering, fmt::Debug};
+use std::{borrow::Borrow, fmt::Debug};
 pub(crate) use walk::*;
 pub struct Trie<K: Key, V> {
     root: Option<NodeId<K, V>>,
@@ -20,7 +20,8 @@ impl<K: Key, V: Debug> std::fmt::Debug for Trie<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut walk = Walk::start(&self.root, Ordered);
         let mut f = &mut f.debug_struct("Trie");
-        while let Some(node) = walk.next(&self.shared) {
+        while let Some((node, err)) = walk.next(&self.shared) {
+            debug_assert!(!err);
             f = f.field(&node.to_string(), node.get(&self.shared));
         }
         f.finish()
@@ -89,38 +90,45 @@ impl<K: Key, V> Trie<K, V> {
         Q: Key<Piece = K::Piece>,
     {
         let mut walk = Walk::start(&self.root, keyed(&key));
-        let mut node = walk.next(&self.shared)?;
+        let (mut node, mut err) = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        while let Some(n) = walk.next(&self.shared) {
+        while !err && let Some((n, e)) = walk.next(&self.shared) {
             node = n;
+            err |= e;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
-        node.get(&self.shared).as_leaf().map(Leaf::as_ref)
+        (!err)
+            .then_some(())
+            .and_then(|()| node.get(&self.shared).as_leaf().map(Leaf::as_ref))
     }
     pub fn get_mut<Q>(&mut self, key: Q) -> Option<Leaf<&K, &mut V>>
     where
         Q: Key<Piece = K::Piece>,
     {
         let mut walk = Walk::start(&self.root, keyed(&key));
-        let mut node = walk.next(&self.shared)?;
+        let (mut node, mut err) = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        while let Some(n) = walk.next(&self.shared) {
+        while !err && let Some((n, e)) = walk.next(&self.shared) {
             node = n;
+            err |= e;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
-        node.get_mut(&mut self.shared)
-            .as_leaf_mut()
-            .map(Leaf::as_mut)
+        (!err).then_some(()).and_then(|()| {
+            node.get_mut(&mut self.shared)
+                .as_leaf_mut()
+                .map(Leaf::as_mut)
+        })
     }
     pub fn get_deepest<Q>(&self, key: Q) -> Option<&Node<K, V>>
     where
         Q: Key<Piece = K::Piece>,
     {
         let mut walk = Walk::start(&self.root, keyed(&key));
-        let mut node = walk.next(&self.shared)?;
+        let (mut node, mut err) = walk.next(&self.shared)?;
         debug_assert!(!node.get(&self.shared).is_empty());
-        while let Some(n) = walk.next(&self.shared) {
+        while !err && let Some((n, e)) = walk.next(&self.shared) {
             node = n;
+            err |= e;
             debug_assert!(!node.get(&self.shared).is_empty());
         }
         Some(node.get(&self.shared))
@@ -130,9 +138,10 @@ impl<K: Key, V> Trie<K, V> {
         Q: Key<Piece = K::Piece>,
     {
         let mut walk = Walk::start(&self.root, keyed(key));
-        let mut node = None;
-        while let Some(n) = walk.next(&self.shared) {
+        let (mut node, mut err) = (None, false);
+        while !err && let Some((n, e)) = walk.next(&self.shared) {
             node = n.get(&self.shared).as_leaf().or(node);
+            err |= e;
         }
         node.map(Leaf::as_ref)
     }
@@ -141,16 +150,13 @@ impl<K: Key, V> Trie<K, V> {
         Q: Key<Piece = K::Piece>,
     {
         let mut walk = Walk::start(&self.root, keyed(key));
-        let mut node = None;
-        while let Some(n) = walk.next(&self.shared) {
+        let (mut node, mut err) = (None, false);
+        while !err && let Some((n, e)) = walk.next(&self.shared) {
             node = n.get(&self.shared).as_leaf().map(|_| n).or(node);
+            err |= e;
         }
-        node.map(|node| {
-            node.get_mut(&mut self.shared)
-                .as_leaf_mut()
-                .unwrap()
-                .as_mut()
-        })
+        node.map(|node| node.get_mut(&mut self.shared).as_leaf_mut().unwrap())
+            .map(Leaf::as_mut)
     }
     pub fn remove<Q>(&mut self, key: &Q) -> Option<Leaf<K, V>>
     where
@@ -160,14 +166,15 @@ impl<K: Key, V> Trie<K, V> {
         let key = Vec::from_iter(key.pieces().cloned());
         let mut walk = Walk::start(&self.root, keyed(&key));
         let mut track = Vec::with_capacity(key.len() + 1);
-        while let Some(node) = walk.next(&self.shared) {
+        let mut err = false;
+        while !err && let Some((node, e)) = walk.next(&self.shared) {
             track.push(node);
+            err |= e;
         }
-        match track.len().cmp(&(key.len() + 1)) {
-            Ordering::Less => return None,
-            Ordering::Equal => (),
-            Ordering::Greater => unreachable!(),
+        if err || track.len() < key.len() + 1 {
+            return None;
         }
+        debug_assert_eq!(track.len(), key.len() + 1);
         let ret = track.pop()?.get_mut(&mut self.shared).take_leaf()?;
         'early: {
             for (k, mut node) in key.iter().zip(track.into_iter()).rev() {
@@ -198,7 +205,8 @@ impl<K: Key, V> Trie<K, V> {
         let mut walk = Walk::start(&self.root, Ordered);
         std::iter::from_fn(move || {
             loop {
-                let node = walk.next(&self.shared)?;
+                let (node, err) = walk.next(&self.shared)?;
+                debug_assert!(!err);
                 if let Some(leaf) = node.get_mut(&mut self.shared).take_leaf() {
                     break Some(leaf);
                 }
@@ -209,7 +217,8 @@ impl<K: Key, V> Trie<K, V> {
         let mut walk = Walk::start(&self.root, Ordered);
         std::iter::from_fn(move || {
             loop {
-                let node = walk.next(&self.shared)?;
+                let (node, err) = walk.next(&self.shared)?;
+                debug_assert!(!err);
                 if let Some(leaf) = node.get(&self.shared).as_leaf() {
                     break Some(leaf.as_ref());
                 }
@@ -220,7 +229,8 @@ impl<K: Key, V> Trie<K, V> {
         let mut walk = Walk::start(&self.root, Ordered);
         std::iter::from_fn(move || {
             loop {
-                let node = walk.next(&self.shared)?;
+                let (node, err) = walk.next(&self.shared)?;
+                debug_assert!(!err);
                 if let Some(leaf) = node.get_mut(&mut self.shared).as_leaf_mut() {
                     // SAFETY - Lifetime extension
                     // We hold exclusive access to self and therefore shared and always return disjoint entries.
@@ -289,6 +299,7 @@ mod tests {
         assert_eq!(trie.insert(vec![0], '0'), Some(Leaf::new(vec![0], 'O')));
         assert_eq!(trie.get([0]), Some(Leaf::new(&vec![0], &'0')));
         assert_eq!(trie.get([1]), Some(Leaf::new(&vec![1], &'1')));
+        assert_eq!(trie.get([0, 0, 0]), None);
         assert_eq!(
             trie,
             Trie {
