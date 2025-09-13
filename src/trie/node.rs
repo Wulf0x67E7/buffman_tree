@@ -8,7 +8,7 @@ pub type NodeId<K, V> = Handle<Node<K, V>>;
 #[derive(Debug, PartialEq)]
 pub enum Node<K: Key, V> {
     None,
-    Leaf(Leaf<K, V>),
+    Leaf(bool, Leaf<K, V>),
     Branch(Branch<K, V>),
     Full(Leaf<K, V>, Branch<K, V>),
 }
@@ -24,7 +24,7 @@ impl<K: Key, V> Node<K, V> {
     pub fn is_empty(&self) -> bool {
         match self {
             Node::None => true,
-            Node::Leaf(_) | Node::Full(_, _) => false,
+            Node::Leaf(_, _) | Node::Full(_, _) => false,
             Node::Branch(branch) => branch.is_empty(),
         }
     }
@@ -42,41 +42,49 @@ impl<K: Key, V> Node<K, V> {
             None
         }
     }
-    pub fn make_branch(&mut self) -> &mut Branch<K, V> {
+    pub fn make_branch(&mut self) -> (&mut Branch<K, V>, Option<Leaf<K, V>>) {
         match self {
             Node::None => {
                 *self = Self::Branch(Branch::default());
                 let Node::Branch(branch) = self else {
                     unreachable!()
                 };
-                branch
+                (branch, None)
             }
-            Node::Leaf(_) => {
-                let Node::Leaf(leaf) = take(self) else {
+            Node::Leaf(_, _) => {
+                let Node::Leaf(shallow, leaf) = take(self) else {
                     unreachable!();
                 };
-                *self = Self::Full(leaf, Branch::default());
-                let Node::Full(_, branch) = self else {
+                let leaf = if shallow {
+                    *self = Self::Branch(Branch::default());
+                    Some(leaf)
+                } else {
+                    *self = Self::Full(leaf, Branch::default());
+                    None
+                };
+                let (Node::Branch(branch) | Node::Full(_, branch)) = self else {
                     unreachable!()
                 };
-                branch
+                (branch, leaf)
             }
-            Node::Branch(branch) | Node::Full(_, branch) => branch,
+            Node::Branch(branch) | Node::Full(_, branch) => (branch, None),
         }
     }
     pub fn insert_child_handle<'a>(
         &mut self,
         key: K::Piece,
         child: Handle<Self>,
-    ) -> Option<Handle<Self>> {
-        self.make_branch().insert_handle(key, child)
+    ) -> (Option<Handle<Self>>, Option<Leaf<K, V>>) {
+        let (branch, leaf) = self.make_branch();
+        (branch.insert_handle(key, child), leaf)
     }
     pub fn insert_child<'a>(
         &mut self,
         key: K::Piece,
         shared: &'a mut Slab<Self>,
-    ) -> &'a mut Node<K, V> {
-        self.make_branch().get_or_insert(key, shared)
+    ) -> (&'a mut Node<K, V>, Option<Leaf<K, V>>) {
+        let (branch, leaf) = self.make_branch();
+        (branch.get_or_insert(key, shared), leaf)
     }
     pub fn get_child_handle(&self, key: K::Piece) -> Option<&Handle<Self>> {
         self.as_branch()?.get_handle(&key)
@@ -92,27 +100,29 @@ impl<K: Key, V> Node<K, V> {
         self.as_branch_mut()?.get_mut(key, shared)
     }
     pub fn as_leaf(&self) -> Option<&Leaf<K, V>> {
-        if let Self::Leaf(leaf) | Self::Full(leaf, _) = self {
+        if let Self::Leaf(_, leaf) | Self::Full(leaf, _) = self {
             Some(leaf)
         } else {
             None
         }
     }
     pub fn as_leaf_mut(&mut self) -> Option<&mut Leaf<K, V>> {
-        if let Self::Leaf(leaf) | Self::Full(leaf, _) = self {
+        if let Self::Leaf(_, leaf) | Self::Full(leaf, _) = self {
             Some(leaf)
         } else {
             None
         }
     }
-    pub fn make_leaf(&mut self, key: K, value: V) -> Option<Leaf<K, V>>
-    where
-        K: PartialEq,
-    {
+    pub fn make_leaf(
+        &mut self,
+        shallow: bool,
+        key: K,
+        value: V,
+    ) -> Option<Result<Leaf<K, V>, Leaf<K, V>>> {
         let new = Leaf::from(key, value);
         match self {
             Node::None => {
-                *self = Node::Leaf(new);
+                *self = Node::Leaf(shallow, new);
                 None
             }
             Node::Branch(_) => {
@@ -122,9 +132,18 @@ impl<K: Key, V> Node<K, V> {
                 *self = Self::Full(new, branch);
                 None
             }
-            Node::Leaf(leaf) | Node::Full(leaf, _) => {
-                debug_assert!(leaf.key() == new.key());
-                Some(replace(leaf, new))
+            Node::Leaf(shallow, leaf) => {
+                if *shallow {
+                    debug_assert!(leaf.key().len() > new.key().len());
+                    Some(Err(replace(leaf, new)))
+                } else {
+                    debug_assert!(leaf.key().equal(new.key()));
+                    Some(Ok(replace(leaf, new)))
+                }
+            }
+            Node::Full(leaf, _) => {
+                debug_assert!(leaf.key().equal(new.key()));
+                Some(Ok(replace(leaf, new)))
             }
         }
     }
@@ -134,8 +153,8 @@ impl<K: Key, V> Node<K, V> {
                 debug_assert!(false);
                 None
             }
-            Node::Leaf(_) => {
-                let Node::Leaf(leaf) = take(self) else {
+            Node::Leaf(_, _) => {
+                let Node::Leaf(_, leaf) = take(self) else {
                     unreachable!();
                 };
                 Some(leaf)
@@ -153,7 +172,7 @@ impl<K: Key, V> Node<K, V> {
     pub fn as_leaf_branch(&self) -> (Option<&Leaf<K, V>>, Option<&Branch<K, V>>) {
         match self {
             Node::None => (None, None),
-            Node::Leaf(leaf) => (Some(leaf), None),
+            Node::Leaf(_, leaf) => (Some(leaf), None),
             Node::Branch(branch) => (None, Some(branch)),
             Node::Full(leaf, branch) => (Some(leaf), Some(branch)),
         }
@@ -161,7 +180,7 @@ impl<K: Key, V> Node<K, V> {
     pub fn as_leaf_branch_mut(&mut self) -> (Option<&mut Leaf<K, V>>, Option<&mut Branch<K, V>>) {
         match self {
             Node::None => (None, None),
-            Node::Leaf(leaf) => (Some(leaf), None),
+            Node::Leaf(_, leaf) => (Some(leaf), None),
             Node::Branch(branch) => (None, Some(branch)),
             Node::Full(leaf, branch) => (Some(leaf), Some(branch)),
         }

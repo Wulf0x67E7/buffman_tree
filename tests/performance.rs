@@ -5,7 +5,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use std::{
     borrow::Borrow,
     collections::{BTreeMap, HashMap},
-    hash::{Hash, RandomState},
+    hash::Hash,
     hint::black_box,
     ops::Bound,
     time::Duration,
