@@ -4,13 +4,13 @@ use std::{
     hash::Hash,
     marker::PhantomData,
 };
-
+pub type Shared<T> = Slab<T>;
 pub struct Handle<T>(usize, PhantomData<for<'a> fn(&'a T) -> &'a T>);
 impl<T> Handle<T> {
     pub(crate) fn from(vacant: usize) -> Self {
         Self(vacant, PhantomData)
     }
-    pub fn new_shared() -> Slab<T> {
+    pub fn new_shared() -> Shared<T> {
         Slab::new()
     }
     pub fn vacant(shared: &Slab<T>) -> Handle<PhantomData<T>> {

@@ -3,6 +3,7 @@
         "buffman",
         "quickcheck",
         "Seedable",
+        "vnode",
         "Xoshiro"
     ]
 }
