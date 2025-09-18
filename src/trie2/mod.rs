@@ -53,7 +53,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     }
     pub fn insert(&mut self, key: impl IntoIterator<Item = K>, value: V) -> Option<V> {
         VNode::start(self.root.leak())
-            .make_descend(&mut self.nodes, &mut self.branches, key)
+            .make_descend(self, key, |_, _| ())
             .make_leaf(&mut self.nodes, &mut self.branches, &mut self.leaves, value)
     }
     pub fn get<'a, Q: 'a + PartialEq + Ord>(
@@ -93,8 +93,8 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     where
         K: Borrow<Q>,
     {
-        match VNode::start(self.root.leak()).find(&self.nodes, &self.branches, key, |node| {
-            Err(node.leaf(&self.nodes, &self.leaves).map(|_| node))
+        match VNode::start(self.root.leak()).find(self, key, |node, this| {
+            Err(node.leaf(&this.nodes, &this.leaves).map(|_| node))
         }) {
             Ok(node) => Ok(node.leaf_mut(&self.nodes, &mut self.leaves).unwrap()),
             Err(node) => Err(node.leaf_mut(&self.nodes, &mut self.leaves)),
@@ -125,20 +125,15 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     where
         K: Borrow<Q>,
     {
-        let mut stack = vec![];
-        let ret = VNode::start(self.root.leak())
-            .descend(&self.nodes, &self.branches, key, |node| {
-                stack.push(node);
-            })
-            .ok()?
-            .take_leaf(&mut self.nodes, &mut self.leaves)?;
-        stack.reverse();
-        for node in stack {
-            if !node.prune_branch(&mut self.nodes, &mut self.branches) {
-                break;
-            }
-        }
-        Some(ret)
+        VNode::start(self.root.leak())
+            .dive(
+                self,
+                key,
+                |node, this| Some(node.as_node(&this.nodes).is_some()),
+                |node, this| node.take_leaf(&mut this.nodes, &mut this.leaves),
+                |node, this| node.prune_branch(&mut this.nodes, &mut this.branches),
+            )
+            .ok()
     }
 }
 
@@ -151,7 +146,7 @@ impl<K: Ord, V> Trie<K, V> {
         K: Borrow<Q>,
     {
         VNode::start(self.root.leak())
-            .descend(&self.nodes, &self.branches, key, |_| ())
+            .descend(self, key, |_, _| true)
             .ok()?
             .leaf_handle(&self.nodes)
     }
@@ -163,9 +158,7 @@ impl<K: Ord, V> Trie<K, V> {
         K: Borrow<Q>,
     {
         VNode::start(self.root.leak())
-            .find(&self.nodes, &self.branches, key, |node| {
-                Err(node.leaf_handle(&self.nodes))
-            })
+            .find(self, key, |node, this| Err(node.leaf_handle(&this.nodes)))
             .map_err(|node| node.leaf_handle(&self.nodes))
     }
 }
@@ -183,8 +176,8 @@ mod tests {
     }
     #[test]
     fn insert_get_case() {
-        let values = BTreeMap::from_iter([(vec![], "".into())]);
-        let searches = vec![vec![0]];
+        let values = BTreeMap::from_iter([(vec![0], "0".into())]);
+        let searches = vec![vec![]];
         insert_get(values, searches);
     }
     fn insert_get(values: BTreeMap<Vec<u8>, String>, mut searches: Vec<Vec<u8>>) {
@@ -217,7 +210,7 @@ mod tests {
                 "failed get deepest {search:?}\n{trie:?}"
             );
         }
-        assert!(trie.is_empty(), "{trie:?}");
+        assert!(trie.is_empty(), "failed is empty\n{trie:?}");
         //assert_eq!(trie, Trie::default());
     }
 }
