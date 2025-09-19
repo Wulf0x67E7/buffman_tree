@@ -1,4 +1,4 @@
-use buffman_tree::{Key, Leaf, Trie, util::time};
+use buffman_tree::{Trie, util::time};
 use quickcheck::{Arbitrary, Gen};
 use rand::{RngCore, SeedableRng, seq::SliceRandom};
 use rand_xoshiro::Xoshiro256PlusPlus;
@@ -14,16 +14,8 @@ use std::{
 trait MapExt<K, Q: ?Sized, V> {
     fn get_longest_prefix(&self, key: &Q) -> Option<(&K, &V)>;
 }
-impl<K: Key, Q, V> MapExt<K, Q, V> for Trie<K, V>
-where
-    Q: Key<Piece = K::Piece>,
-{
-    fn get_longest_prefix(&self, key: &Q) -> Option<(&K, &V)> {
-        self.get_deepest_leaf(key).map(Leaf::unwrap)
-    }
-}
 impl<K: IntoIterator<Item: Ord>, Q: IntoIterator<Item: Ord>, V> MapExt<K, Q, V>
-    for buffman_tree::trie2::Trie<K::Item, (K, V)>
+    for Trie<K::Item, (K, V)>
 where
     for<'a> &'a Q: IntoIterator<Item = &'a Q::Item>,
     K::Item: Borrow<Q::Item>,
@@ -105,18 +97,14 @@ fn performance() {
         searches.iter().map(|k| &**k),
         usize::wrapping_add,
     );
-    let trie =
-        bench::<Trie<Box<[char]>, usize>, _, _, _>(entries.clone(), &searches, usize::wrapping_add);
-    let trie2 = bench::<buffman_tree::trie2::Trie<char, (Box<[char]>, usize)>, _, _, _>(
+    let trie = bench::<Trie<char, (Box<[char]>, usize)>, _, _, _>(
         entries.clone(),
         &searches,
         usize::wrapping_add,
     );
 
     println!("btree:    {btree:?}");
-    println!("trie:     {trie:?}");
-    println!("trie2:    {trie2:?}");
+    println!("trie2:    {trie:?}");
 
     assert_eq!(btree.2, trie.2);
-    assert_eq!(btree.2, trie2.2);
 }

@@ -13,14 +13,8 @@ impl<T> Handle<T> {
     pub fn new_shared() -> Shared<T> {
         Slab::new()
     }
-    pub fn vacant(shared: &Slab<T>) -> Handle<PhantomData<T>> {
-        Handle::from(shared.vacant_key())
-    }
-    pub fn insert(vacant: Handle<PhantomData<T>>, shared: &mut Slab<T>, val: T) -> Self {
-        let ret = shared.vacant_entry();
-        assert_eq!(vacant.0, ret.key());
-        ret.insert(val);
-        Self::from(vacant.0)
+    pub fn new_shared_with_capacity(capacity: usize) -> Shared<T> {
+        Slab::with_capacity(capacity)
     }
     pub fn new(shared: &mut Slab<T>, val: T) -> Self {
         Self::from(shared.insert(val))
@@ -40,40 +34,8 @@ impl<T> Handle<T> {
     pub fn get_mut<'a>(&self, shared: &'a mut Slab<T>) -> &'a mut T {
         &mut shared[self.0]
     }
-    pub fn insert_if<'a>(
-        &mut self,
-        shared: &'a mut Slab<T>,
-        predicate: impl FnOnce(&mut T) -> Result<Self, T>,
-        f: impl FnOnce(&mut T, &Self),
-    ) -> Self {
-        match predicate(self.get_mut(shared)) {
-            Ok(handle) => handle,
-            Err(val) => {
-                let ret = Self::new(shared, val);
-                f(self.get_mut(shared), &ret);
-                ret
-            }
-        }
-    }
-    pub fn remove_if<'a>(
-        &mut self,
-        shared: &'a mut Slab<T>,
-        predicate: impl FnOnce(&mut Self, &mut Slab<T>) -> Option<Self>,
-        f: impl FnOnce(&mut Self, &mut Slab<T>, Self),
-    ) -> Option<T> {
-        let handle = predicate(self, shared)?;
-        let ret = handle.leak().remove(shared);
-        f(self, shared, handle);
-        Some(ret)
-    }
     pub fn replace<'a>(&self, shared: &'a mut Slab<T>, val: T) -> T {
         std::mem::replace(self.get_mut(shared), val)
-    }
-    pub fn take(&self, shared: &mut Slab<T>) -> T
-    where
-        T: Default,
-    {
-        self.replace(shared, T::default())
     }
     pub fn remove(self, shared: &mut Slab<T>) -> T {
         shared.remove(self.0)

@@ -1,8 +1,8 @@
 use crate::{
-    handle::{Handle, Shared},
-    trie2::{
+    trie::{
         LeafHandle, Trie,
         branch::{Branch, BranchHandle},
+        handle::{Handle, Shared},
         node::{Node, NodeHandle},
     },
     util::OptExt,
@@ -69,7 +69,7 @@ impl<K: Ord, V> VNode<K, V> {
             return next;
         }
         let node = self.handle.get_mut(&mut trie.nodes);
-        if node.is_empty_node() {
+        if node.is_empty() {
             node.prefix_mut().push(key);
             Self {
                 prefix_len: node.prefix().len(),
@@ -321,7 +321,7 @@ impl<K: Ord, V> VNode<K, V> {
 /// Manipulation methods
 impl<K: Ord, V> VNode<K, V> {
     pub fn empty_node(&self, nodes: &Shared<Node<K, V>>) -> bool {
-        self.handle.get(nodes).is_empty_node()
+        self.handle.get(nodes).is_empty()
     }
     pub fn is_node_handle(&self, nodes: &Shared<Node<K, V>>) -> NodeHandle<K, V> {
         self.as_node_handle(nodes)
@@ -358,7 +358,7 @@ impl<K: Ord, V> VNode<K, V> {
             Ordering::Less => {
                 let (value, new_node) = node.make_leaf_at(branches, leaves, value, self.prefix_len);
                 if let Some((key, new_node)) = new_node {
-                    debug_assert!(!new_node.is_empty_node());
+                    debug_assert!(!new_node.is_empty());
                     node.get_branch_mut(branches)
                         .unwrap()
                         .insert(key, Handle::new(nodes, new_node));
@@ -390,7 +390,7 @@ impl<K: Ord, V> VNode<K, V> {
             Ordering::Less => {
                 let (branch, new_node) = node.make_branch_at(&mut trie.branches, self.prefix_len);
                 if let Some((key, new_node)) = new_node {
-                    debug_assert!(!new_node.is_empty_node());
+                    debug_assert!(!new_node.is_empty());
                     node.get_branch_mut(&mut trie.branches)
                         .unwrap()
                         .insert(key, Handle::new(&mut trie.nodes, new_node));
@@ -447,7 +447,7 @@ impl<K: Ord, V> VNode<K, V> {
             }
             leaf.invert(())
         } else {
-            self.handle.get(&trie.nodes).is_empty_node().then_some(())
+            self.handle.get(&trie.nodes).is_empty().then_some(())
         }
     }
 }

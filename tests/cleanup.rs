@@ -1,12 +1,9 @@
-use std::{collections::BTreeSet, iter::repeat};
-
+use buffman_tree::Trie;
 use quickcheck::TestResult;
 use quickcheck_macros::quickcheck;
 use rand::{SeedableRng, seq::SliceRandom};
 use rand_xoshiro::Xoshiro256PlusPlus as Rng;
-
-use buffman_tree::Leaf;
-use buffman_tree::Trie;
+use std::{collections::BTreeSet, iter::repeat};
 
 #[test]
 fn remove_cleanup() {
@@ -28,11 +25,11 @@ fn remove_cleanup_fuzz(data: BTreeSet<Vec<u8>>, shuffle_seed: u64) -> TestResult
 }
 
 pub type Condition =
-    fn(&Box<[Box<[u8]>]>, &Trie<Box<[u8]>, ()>, &Box<[Box<[u8]>]>) -> Option<String>;
+    fn(&Box<[Box<[u8]>]>, &Trie<u8, (Box<[u8]>, ())>, &Box<[Box<[u8]>]>) -> Option<String>;
 macro_rules! cond {
     (|$arg:ident, $trie:ident, $res:ident| $x:stmt; !$pred:expr => $err:expr) => {
         #[allow(unused_variables)]
-        |$arg: &Box<[Box<[u8]>]>, $trie: &Trie<Box<[u8]>, ()>, $res: &Box<[Box<[u8]>]>| {
+        |$arg: &Box<[Box<[u8]>]>, $trie: &Trie<u8, (Box<[u8]>, ())>, $res: &Box<[Box<[u8]>]>| {
             $x(!$pred).then(|| format!($err))
         }
     };
@@ -63,9 +60,10 @@ impl Case {
     pub fn check(mut self) -> TestResult {
         let mut arg = Box::from_iter(self.values);
         arg.shuffle(&mut self.rng);
-        let mut trie = Trie::from_iter(arg.iter().cloned().zip(repeat(())));
+        let mut trie: Trie<u8, (Box<[u8]>, ())> =
+            Trie::from_iter(arg.iter().cloned().zip(repeat(())));
         arg.shuffle(&mut self.rng);
-        let res = Box::from_iter(arg.iter().flat_map(|v| trie.remove(v)).map(Leaf::into_key));
+        let res = Box::from_iter(arg.iter().flat_map(|v| trie.remove(v)).map(|(k, ())| k));
         let conditions = conditions!(|arg,trie,res| [
             (); !trie.is_empty() => "Trie::is_empty == false",
             let default = Trie::default(); !trie == &default => "{trie:?} != Trie::default() == {default:?}",

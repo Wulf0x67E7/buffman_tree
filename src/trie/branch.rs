@@ -1,104 +1,83 @@
-use slab::Slab;
-
-use crate::{Key, Node, NodeId, handle::Handle, util::unzipped};
+use crate::{
+    trie::{
+        Handle, Trie,
+        handle::Shared,
+        node::{Node, NodeHandle},
+    },
+    util::debug_fn,
+};
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{BTreeMap, btree_map},
     fmt::Debug,
+    mem::take,
 };
 
-#[derive(PartialEq)]
-pub struct Branch<K: Key, V>(BTreeMap<K::Piece, NodeId<K, V>>);
-impl<K: Key, V> Default for Branch<K, V> {
+#[derive(Debug)]
+pub struct Branch<K, V>(BTreeMap<K, NodeHandle<K, V>>);
+impl<K: Debug, V: Debug> Branch<K, V> {
+    pub(crate) fn branch_debug<'a>(&'a self, trie: &'a Trie<K, V>) -> impl 'a + Debug {
+        debug_fn(|f| {
+            let mut f = f.debug_list();
+            f.entries(
+                self.0
+                    .iter()
+                    .map(|(k, v)| (k, v.get(&trie.nodes).node_debug(trie))),
+            );
+            f.finish()
+        })
+    }
+}
+impl<K, V> Default for Branch<K, V> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<K: Key, V: Debug> Debug for Branch<K, V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-impl<K: Key, V> FromIterator<(K::Piece, NodeId<K, V>)> for Branch<K, V> {
-    fn from_iter<T: IntoIterator<Item = (K::Piece, NodeId<K, V>)>>(iter: T) -> Self {
-        let mut ret = Self::default();
-        for (key, value) in iter {
-            ret.0.insert(key, value);
-        }
-        ret
-    }
-}
-impl<K: Key, V> Branch<K, V> {
+impl<K, V> Branch<K, V> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    pub fn insert_handle(&mut self, key: K::Piece, child: NodeId<K, V>) -> Option<NodeId<K, V>> {
-        self.0.insert(key, child)
+}
+impl<K: Ord, V> Branch<K, V> {
+    pub fn insert(&mut self, key: K, node: NodeHandle<K, V>) -> Option<NodeHandle<K, V>> {
+        self.0.insert(key, node)
     }
-    pub fn get_or_insert<'a>(
-        &mut self,
-        key: K::Piece,
-        shared: &'a mut Slab<Node<K, V>>,
-    ) -> &'a mut Node<K, V> {
+    pub fn get_or_insert(&mut self, shared: &mut Shared<Node<K, V>>, key: K) -> NodeHandle<K, V> {
         self.0
             .entry(key)
-            .or_insert_with(|| Handle::new_default(shared))
-            .get_mut(shared)
+            .or_insert_with(|| Handle::new(shared, Node::from(vec![], ())))
+            .leak()
     }
-    pub fn get_handle<Q: ?Sized>(&self, key: &Q) -> Option<&NodeId<K, V>>
+    pub fn get<Q: Ord>(&self, key: &Q) -> Option<NodeHandle<K, V>>
     where
-        Q: Ord,
-        K::Piece: Borrow<Q>,
+        K: Borrow<Q>,
     {
-        self.0.get(key)
+        self.0.get(key).map(Handle::leak)
     }
-    pub fn get<'a>(&self, key: K::Piece, shared: &'a Slab<Node<K, V>>) -> Option<&'a Node<K, V>> {
-        self.get_handle(&key)
-            .zip(Some(shared))
-            .map(unzipped(Handle::get))
-    }
-    pub fn get_mut<'a>(
-        &self,
-        key: K::Piece,
-        shared: &'a mut Slab<Node<K, V>>,
-    ) -> Option<&'a mut Node<K, V>> {
-        self.get_handle(&key)
-            .zip(Some(shared))
-            .map(unzipped(Handle::get_mut))
-    }
-    pub fn remove<Q>(&mut self, key: &Q) -> Option<NodeId<K, V>>
-    where
-        Q: Ord,
-        K::Piece: Borrow<Q>,
-    {
-        self.0.remove(key)
-    }
-    pub fn remove_if<'a>(
-        &mut self,
-        key: K::Piece,
-        shared: &'a mut Slab<Node<K, V>>,
-        f: impl FnOnce(&mut Slab<Node<K, V>>, &NodeId<K, V>) -> bool,
-    ) -> Option<Node<K, V>> {
-        match self.0.entry(key) {
-            Entry::Vacant(_) => None,
-            Entry::Occupied(child) => {
-                if f(shared, child.get()) {
-                    Some(child.remove().remove(shared))
-                } else {
-                    None
-                }
+    pub fn cleanup(&mut self, nodes: &mut Shared<Node<K, V>>) -> usize {
+        self.0.retain(|_, node| {
+            if node.get(nodes).is_empty() {
+                node.leak().remove(nodes);
+                false
+            } else {
+                true
             }
+        });
+        self.0.len()
+    }
+    pub fn prune(
+        &mut self,
+        nodes: &mut Shared<Node<K, V>>,
+    ) -> Option<Option<(K, NodeHandle<K, V>)>> {
+        match self.cleanup(nodes) {
+            0 => Some(None),
+            1 => Some(take(&mut self.0).into_iter().last()),
+            _ => None,
         }
     }
-    pub fn children(&self) -> Children<K, V> {
+
+    pub fn values(&self) -> btree_map::Values<'_, K, NodeHandle<K, V>> {
         self.0.values()
     }
-    pub fn iter(&self) -> Iter<K, V> {
-        self.0.iter()
-    }
 }
-#[allow(type_alias_bounds)]
-pub type Children<'a, K: Key, V> =
-    std::collections::btree_map::Values<'a, K::Piece, Handle<Node<K, V>>>;
-#[allow(type_alias_bounds)]
-pub type Iter<'a, K: Key, V> = std::collections::btree_map::Iter<'a, K::Piece, Handle<Node<K, V>>>;
+pub type BranchHandle<K, V> = Handle<Branch<K, V>>;

@@ -1,416 +1,283 @@
-mod branch;
-pub mod handle;
-mod key;
-mod leaf;
-mod node;
-mod walk;
-use crate::handle::Handle;
-pub use branch::*;
-pub use key::*;
-pub use leaf::*;
-pub use node::*;
-use slab::Slab;
-use std::{borrow::Borrow, fmt::Debug};
-pub(crate) use walk::*;
-pub struct Trie<K: Key, V> {
-    root: Option<NodeId<K, V>>,
-    shared: Slab<Node<K, V>>,
-}
-impl<K: Key, V: Debug> std::fmt::Debug for Trie<K, V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut walk = Walk::start(&self.root, Ordered);
-        let mut f = &mut f.debug_struct("Trie");
-        while let Some((node, err)) = walk.next(&self.shared) {
-            debug_assert!(!err);
-            f = f.field(&node.to_string(), node.get(&self.shared));
-        }
-        f.finish()
-    }
-}
-impl<K: Key, V: PartialEq> PartialEq for Trie<K, V> {
-    fn eq(&self, other: &Self) -> bool {
-        self.iter().zip(other.iter()).all(|(a, b)| a == b)
-    }
-}
-impl<K: Key, V> Default for Trie<K, V> {
-    fn default() -> Self {
-        Self {
-            root: None,
-            shared: Slab::new(),
-        }
-    }
-}
-impl<K: Key, V> FromIterator<(K, V)> for Trie<K, V> {
-    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let mut ret = Self::default();
-        for (key, value) in iter {
-            ret.insert(key, value);
-        }
-        ret
-    }
-}
-impl<K: Key, V> Trie<K, V> {
-    pub fn is_empty(&self) -> bool {
-        debug_assert!(
-            !self
-                .root
-                .as_ref()
-                .map(|h| h.get(&self.shared))
-                .map(Node::is_empty)
-                .unwrap_or(false)
-        );
-        self.root.is_none()
-    }
-    pub fn insert(&mut self, key: K, value: V) -> Option<Leaf<K, V>> {
-        let mut ret = None;
-        let mut displaced = vec![(key, value)];
-        while let Some((key, value)) = displaced.pop() {
-            let mut shallow = false;
-            let mut node = self
-                .root
-                .get_or_insert_with(|| {
-                    shallow = true;
-                    Handle::new_default(&mut self.shared)
-                })
-                .leak();
-            'shallow: {
-                for key in key.pieces().map(|k| k.to_owned()) {
-                    if shallow {
-                        break 'shallow;
-                    }
-                    node = node.insert_if(
-                        &mut self.shared,
-                        {
-                            let key = key.clone();
-                            |node| {
-                                node.get_child_handle(key).map(Handle::leak).ok_or_else(|| {
-                                    shallow = true;
-                                    Node::default()
-                                })
-                            }
-                        },
-                        |node, handle| {
-                            displaced.extend(
-                                node.insert_child_handle(key, handle.leak())
-                                    .1
-                                    .map(Leaf::unwrap),
-                            );
-                        },
-                    );
-                }
-                shallow = false;
-            }
-            match node
-                .get_mut(&mut self.shared)
-                .make_leaf(shallow, key, value)
-            {
-                Some(Ok(leaf)) if ret.is_none() => {
-                    ret = Some(leaf);
-                }
-                Some(Ok(leaf) | Err(leaf)) => displaced.push(leaf.unwrap()),
-                None => (),
-            }
-        }
-        ret
-    }
+use crate::{
+    trie::{
+        branch::Branch,
+        handle::{Handle, Shared},
+        node::{Node, NodeHandle},
+        vnode::VNode,
+    },
+    util::OptExt as _,
+};
+pub(self) mod branch;
+pub(self) mod handle;
+pub(self) mod node;
+#[cfg(test)]
+pub(crate) mod testing;
+pub(self) mod vnode;
+use std::{borrow::Borrow, convert::identity, fmt::Debug};
 
-    pub fn get<Q>(&self, key: &Q) -> Option<Leaf<&K, &V>>
+pub(self) type LeafHandle<V> = Handle<V>;
+
+pub struct Trie<K, V> {
+    root: NodeHandle<K, V>,
+    nodes: Shared<Node<K, V>>,
+    branches: Shared<Branch<K, V>>,
+    leaves: Shared<V>,
+}
+impl<K: Debug, V: Debug> Debug for Trie<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Trie")
+            .field(&self.root.get(&self.nodes).node_debug(&self))
+            .finish()
+    }
+}
+impl<K, V> Default for Trie<K, V> {
+    fn default() -> Self {
+        let mut nodes = Handle::new_shared();
+        Self {
+            root: Handle::new_default(&mut nodes),
+            nodes,
+            branches: Handle::new_shared(),
+            leaves: Handle::new_shared(),
+        }
+    }
+}
+impl<K, V> Trie<K, V> {
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut nodes = Handle::new_shared_with_capacity(capacity);
+        Self {
+            root: Handle::new_default(&mut nodes),
+            nodes,
+            branches: Handle::new_shared_with_capacity(capacity),
+            leaves: Handle::new_shared_with_capacity(capacity),
+        }
+    }
+}
+impl<K: IntoIterator<Item: Ord>, V> FromIterator<(K, V)> for Trie<K::Item, V> {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let capacity = {
+            let hint = iter.size_hint();
+            hint.1.unwrap_or(hint.0)
+        };
+        let mut this = Self::with_capacity(capacity);
+        for (k, v) in iter {
+            this.insert(k, v);
+        }
+        this
+    }
+}
+impl<K: Clone + IntoIterator<Item: Ord>, V> FromIterator<(K, V)> for Trie<K::Item, (K, V)> {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let capacity = {
+            let hint = iter.size_hint();
+            hint.1.unwrap_or(hint.0)
+        };
+        let mut this = Self::with_capacity(capacity);
+        for (k, v) in iter {
+            this.insert(k.clone(), (k, v));
+        }
+        this
+    }
+}
+impl<K: Ord, V: PartialEq> PartialEq for Trie<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+impl<K: PartialEq + Ord, V> Trie<K, V> {
+    pub fn is_empty(&self) -> bool {
+        let empty_shallow = self.root.get(&self.nodes).is_empty();
+        debug_assert_eq!(
+            empty_shallow,
+            self.branches.is_empty() && self.leaves.is_empty() && self.nodes.len() == 1,
+            "{} == 0 && {} == 0 && {} == 1",
+            self.branches.len(),
+            self.leaves.len(),
+            self.nodes.len()
+        );
+        empty_shallow
+    }
+    pub fn insert(&mut self, key: impl IntoIterator<Item = K>, value: V) -> Option<V> {
+        VNode::start(self.root.leak())
+            .make_descend(self, key)
+            .make_leaf(self, value)
+    }
+    pub fn get<'a, Q: 'a + PartialEq + Ord>(
+        &self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Option<&V>
     where
-        Q: Key<Piece = K::Piece>,
+        K: Borrow<Q>,
     {
-        let mut walk = Walk::start(&self.root, keyed(key));
-        let (mut node, mut err) = walk.next(&self.shared)?;
-        debug_assert!(!node.get(&self.shared).is_empty());
-        while !err && let Some((n, e)) = walk.next(&self.shared) {
-            node = n;
-            err |= e;
-            debug_assert!(!node.get(&self.shared).is_empty());
-        }
-        node.get(&self.shared)
-            .as_leaf()
-            .filter(|leaf| leaf.key().equal(key))
-            .map(Leaf::as_ref)
+        Some(self.get_handle(key)?.get(&self.leaves))
     }
-    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<Leaf<&K, &mut V>>
+    pub fn get_mut<'a, Q: 'a + PartialEq + Ord>(
+        &mut self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Option<&mut V>
     where
-        Q: Key<Piece = K::Piece>,
+        K: Borrow<Q>,
     {
-        let mut walk = Walk::start(&self.root, keyed(key));
-        let (mut node, mut err) = walk.next(&self.shared)?;
-        debug_assert!(!node.get(&self.shared).is_empty());
-        while !err && let Some((n, e)) = walk.next(&self.shared) {
-            node = n;
-            err |= e;
-            debug_assert!(!node.get(&self.shared).is_empty());
-        }
-        node.get_mut(&mut self.shared)
-            .as_leaf_mut()
-            .filter(|leaf| leaf.key().equal(key))
-            .map(Leaf::as_mut)
+        Some(self.get_handle(key)?.get_mut(&mut self.leaves))
     }
-    pub fn get_deepest<Q>(&self, key: &Q) -> Option<&Node<K, V>>
+    pub fn try_get<'a, Q: 'a + PartialEq + Ord>(
+        &self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Result<&V, Option<&V>>
     where
-        Q: Key<Piece = K::Piece>,
+        K: Borrow<Q>,
     {
-        let mut walk = Walk::start(&self.root, keyed(key));
-        let (mut node, mut err) = walk.next(&self.shared)?;
-        debug_assert!(!node.get(&self.shared).is_empty());
-        while !err && let Some((n, e)) = walk.next(&self.shared) {
-            if let Some(leaf) = n.get(&self.shared).as_leaf()
-                && leaf.key().len() <= key.len()
-            {
-                node = n;
-            }
-            err |= e;
-            debug_assert!(!node.get(&self.shared).is_empty());
-        }
-        Some(node.get(&self.shared))
+        Ok(self
+            .try_get_handle(key)
+            .map_err(Option::remap(|leaf: Handle<V>| leaf.get(&self.leaves)))?
+            .get(&self.leaves))
     }
-    pub fn get_deepest_leaf<Q>(&self, key: &Q) -> Option<Leaf<&K, &V>>
+    pub fn try_get_mut<'a, Q: 'a + PartialEq + Ord>(
+        &mut self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Result<&mut V, Option<&mut V>>
     where
-        Q: Key<Piece = K::Piece>,
+        K: Borrow<Q>,
     {
-        let mut walk = Walk::start(&self.root, keyed(key));
-        let (mut node, mut err) = (None, false);
-        while !err && let Some((n, e)) = walk.next(&self.shared) {
-            node = n
-                .get(&self.shared)
-                .as_leaf()
-                .filter(|leaf| leaf.key().len() == leaf.key().equal_len(key))
-                .or(node);
-            err |= e;
+        match self.try_get_handle(key) {
+            Ok(node) => Ok(node.get_mut(&mut self.leaves)),
+            Err(Some(node)) => Err(Some(node.get_mut(&mut self.leaves))),
+            Err(None) => Err(None),
         }
-        node.map(Leaf::as_ref)
     }
-    pub fn get_deepest_leaf_mut<Q>(&mut self, key: &Q) -> Option<Leaf<&K, &mut V>>
+    pub fn get_deepest<'a, Q: 'a + PartialEq + Ord>(
+        &self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Option<&V>
     where
-        Q: Key<Piece = K::Piece>,
+        K: Borrow<Q>,
     {
-        let mut walk = Walk::start(&self.root, keyed(key));
-        let (mut node, mut err) = (None, false);
-        while !err && let Some((n, e)) = walk.next(&self.shared) {
-            node = n
-                .get(&self.shared)
-                .as_leaf()
-                .filter(|leaf| leaf.key().len() == leaf.key().equal_len(key))
-                .map(|_| n)
-                .or(node);
-            err |= e;
-        }
-        node.map(|node| node.get_mut(&mut self.shared).as_leaf_mut().unwrap())
-            .filter(|leaf| leaf.key().equal(key))
-            .map(Leaf::as_mut)
+        self.try_get(key).map_or_else(identity, Option::Some)
     }
-    pub fn remove<Q>(&mut self, key: &Q) -> Option<Leaf<K, V>>
+    pub fn get_deepest_mut<'a, Q: 'a + PartialEq + Ord>(
+        &mut self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Option<&mut V>
     where
-        Q: Key,
-        K::Piece: Borrow<Q::Piece>,
+        K: Borrow<Q>,
     {
-        let key = Vec::from_iter(key.pieces().cloned());
-        let mut walk = Walk::start(&self.root, keyed(&key));
-        let mut track = Vec::with_capacity(key.len() + 1);
-        let mut err = false;
-        while !err && let Some((node, e)) = walk.next(&self.shared) {
-            track.push(node);
-            err |= e;
-        }
-        if err || track.len() < key.len() + 1 {
-            return None;
-        }
-        debug_assert_eq!(track.len(), key.len() + 1);
-        let ret = track.pop()?.get_mut(&mut self.shared).take_leaf()?;
-        'early: {
-            for (k, mut node) in key.iter().zip(track.into_iter()).rev() {
-                if let None = node.remove_if(
-                    &mut self.shared,
-                    |node, shared| {
-                        let child = node.get(shared).as_branch()?.get_handle(&k)?.leak();
-                        child.get(shared).is_empty().then_some(child)
-                    },
-                    |node, shared, child| {
-                        let c = node
-                            .get_mut(shared)
-                            .as_branch_mut()
-                            .unwrap()
-                            .remove(&k)
-                            .unwrap();
-                        assert_eq!(child, c);
-                    },
-                ) {
-                    break 'early;
-                }
-            }
-            self.root.take_if(|node| node.get(&self.shared).is_empty());
-        }
-        Some(ret)
+        self.try_get_mut(key).map_or_else(identity, Option::Some)
     }
-    pub fn into_iter(mut self) -> impl Iterator<Item = Leaf<K, V>> {
-        let mut walk = Walk::start(&self.root, Ordered);
-        std::iter::from_fn(move || {
-            loop {
-                let (node, err) = walk.next(&self.shared)?;
-                debug_assert!(!err);
-                if let Some(leaf) = node.get_mut(&mut self.shared).take_leaf() {
-                    break Some(leaf);
-                }
-            }
-        })
+    pub fn remove<'a, Q: 'a + PartialEq + Ord>(
+        &mut self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        VNode::start(self.root.leak())
+            .dive(
+                self,
+                key,
+                |node, this, _| Some(node.as_node(&this.nodes).is_some()),
+                |node, this| {
+                    let (node, ret) = node.take_leaf(this)?;
+                    node.prune_branch(this);
+                    Some(ret)
+                },
+                |node, this, _| node.prune_branch(this).is_some(),
+            )
+            .ok()
     }
-    pub fn iter(&self) -> impl Iterator<Item = Leaf<&K, &V>> {
-        let mut walk = Walk::start(&self.root, Ordered);
-        std::iter::from_fn(move || {
-            loop {
-                let (node, err) = walk.next(&self.shared)?;
-                debug_assert!(!err);
-                if let Some(leaf) = node.get(&self.shared).as_leaf() {
-                    break Some(leaf.as_ref());
-                }
-            }
-        })
+    pub fn into_iter(self) -> impl Iterator<Item = V>
+    where
+        (K, V): 'static,
+    {
+        VNode::start(self.root.leak()).into_iter(self)
     }
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = Leaf<&K, &mut V>> {
-        let mut walk = Walk::start(&self.root, Ordered);
-        std::iter::from_fn(move || {
-            loop {
-                let (node, err) = walk.next(&self.shared)?;
-                debug_assert!(!err);
-                if let Some(leaf) = node.get_mut(&mut self.shared).as_leaf_mut() {
-                    // SAFETY - Lifetime extension
-                    // We hold exclusive access to self and therefore shared and always return disjoint entries.
-                    // This invariant is explicitly checked in debug builds where it will then panic.
-                    break Some(unsafe { std::mem::transmute(leaf.as_mut()) });
-                }
-            }
-        })
+    pub fn iter(&self) -> impl Iterator<Item = &V> {
+        VNode::start(self.root.leak()).iter(self)
+    }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        VNode::start(self.root.leak()).iter_mut(self)
+    }
+}
+
+impl<K: Ord, V> Trie<K, V> {
+    fn get_handle<'a, Q: 'a + PartialEq + Ord>(
+        &self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Option<Handle<V>>
+    where
+        K: Borrow<Q>,
+    {
+        VNode::start(self.root.leak())
+            .descend(self, key, |_, _, _| true)
+            .ok()?
+            .leaf_handle(self)
+    }
+    fn try_get_handle<'a, Q: 'a + PartialEq + Ord>(
+        &self,
+        key: impl IntoIterator<Item = &'a Q>,
+    ) -> Result<LeafHandle<V>, Option<LeafHandle<V>>>
+    where
+        K: Borrow<Q>,
+    {
+        VNode::start(self.root.leak())
+            .find(self, key, |node, this| Err(node.leaf_handle(this)))
+            .map_err(|node| node.leaf_handle(self))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use quickcheck::Arbitrary;
-
     use super::*;
+    use crate::util::BTrie;
+    use quickcheck_macros::quickcheck;
+    use std::collections::BTreeMap;
 
-    impl<K: Key, V> Arbitrary for Trie<K, V>
-    where
-        (K, V): Arbitrary,
-        V: 'static,
-        Trie<K, V>: Clone + FromIterator<(K, V)>,
-    {
-        fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-            Self::from_iter(Vec::arbitrary(g))
+    #[quickcheck]
+    fn insert_get_remove_fuzz(values: BTreeMap<Vec<u8>, String>, searches: Vec<Vec<u8>>) {
+        insert_get(values, searches);
+    }
+    #[test]
+    fn insert_get_case() {
+        let values = BTreeMap::from_iter([
+            (vec![], "_".into()),
+            (vec![1], "1".into()),
+            (vec![1, 0], "10".into()),
+        ]);
+        let searches = vec![vec![]];
+        insert_get(values, searches);
+    }
+    fn insert_get(values: BTreeMap<Vec<u8>, String>, mut searches: Vec<Vec<u8>>) {
+        let mut btree = BTreeMap::default();
+        let mut trie = Trie::default();
+        searches.extend(values.keys().cloned());
+        for (key, value) in values {
+            assert_eq!(
+                btree.insert(key.clone(), value.clone()),
+                trie.insert(key.clone(), value.clone()),
+                "failed insert {key:?}: {value}"
+            );
         }
-    }
+        for search in &searches {
+            assert_eq!(btree.get(search), trie.get(search), "failed get {search:?}");
+            assert_eq!(
+                btree.get_deepest(&**search),
+                trie.get_deepest(search),
+                "failed get deepest {search:?}\n{trie:?}"
+            );
+        }
+        for (a, b) in btree.values().zip(trie.iter()) {
+            assert_eq!(a, b, "failed iter {a:?} != {b:?}\n{trie:?}");
+        }
+        for key in &searches {
+            assert_eq!(btree.remove(key), trie.remove(key), "failed remove {key:?}");
+            assert_eq!(
+                btree.is_empty(),
+                trie.is_empty(),
+                "failed is empty\n{trie:?}"
+            );
+        }
 
-    #[test]
-    fn empty() {
-        let trie: Trie<[(); 0], ()> = Trie::default();
-        assert!(trie.is_empty());
-        assert_eq!(
-            trie,
-            Trie {
-                root: None,
-                shared: Slab::default()
-            }
-        );
-        assert_eq!(trie.get(&Some(())), None);
-    }
-
-    #[test]
-    fn insert() {
-        let mut trie = Trie::default();
-        assert_eq!(trie.insert(vec![], ' '), None);
-        assert_eq!(trie.get(&[]), Some(Leaf::new(&vec![], &' ')));
-        assert_eq!(
-            trie,
-            Trie {
-                root: Some(Handle::from(0)),
-                shared: Slab::from_iter([(0, Node::Leaf(false, Leaf::new(vec![], ' ')))])
-            }
-        );
-        assert_eq!(trie.insert(vec![], '_'), Some(Leaf::new(vec![], ' ')));
-        assert_eq!(trie.get(&[]), Some(Leaf::new(&vec![], &'_')));
-        assert_eq!(
-            trie,
-            Trie {
-                root: Some(Handle::from(0)),
-                shared: Slab::from_iter([(0, Node::Leaf(false, Leaf::new(vec![], '_')))])
-            }
-        );
-        assert_eq!(trie.insert(vec![0], 'O'), None);
-        assert_eq!(trie.insert(vec![1], '1'), None);
-        assert_eq!(trie.insert(vec![0], '0'), Some(Leaf::new(vec![0], 'O')));
-        assert_eq!(trie.get(&[0]), Some(Leaf::new(&vec![0], &'0')));
-        assert_eq!(trie.get(&[1]), Some(Leaf::new(&vec![1], &'1')));
-        assert_eq!(trie.get(&[0, 0, 0]), None);
-        assert_eq!(
-            trie,
-            Trie {
-                root: Some(Handle::from(0)),
-                shared: Slab::from_iter([
-                    (
-                        0,
-                        Node::Full(
-                            Leaf::new(vec![], '_'),
-                            Branch::from_iter([(0, Handle::from(1)), (1, Handle::from(2))])
-                        )
-                    ),
-                    (1, Node::Leaf(false, Leaf::new(vec![0], '0'))),
-                    (2, Node::Leaf(false, Leaf::new(vec![1], '1')))
-                ])
-            }
-        );
-    }
-    #[test]
-    fn shallow_leaf() {
-        let trie = Trie::from_iter([(vec![0, 0, 0], "000")]);
-        assert_eq!(
-            trie.root
-                .as_ref()
-                .unwrap()
-                .get(&trie.shared)
-                .as_leaf()
-                .unwrap(),
-            &Leaf::from(vec![0, 0, 0], "000")
-        );
-        assert_eq!(trie.get(&[]), None);
-    }
-    #[test]
-    fn remove() {
-        let mut trie = Trie::default();
-        trie.insert(vec![], ' ');
-        trie.insert(vec![0], '0');
-        trie.insert(vec![1], '1');
-        assert_eq!(trie.remove(&[2]), None);
-        assert_eq!(trie.remove(&[0, 0]), None);
-        assert_eq!(trie.remove(&[0]), Some(Leaf::new(vec![0], '0')));
-        assert_eq!(trie, Trie::from_iter([(vec![], ' '), (vec![1], '1')]));
-        assert_eq!(trie.remove(&[0]), None);
-        assert_eq!(trie.remove(&[]), Some(Leaf::new(vec![], ' ')));
-        assert_eq!(trie, Trie::from_iter([(vec![1], '1')]));
-        assert_eq!(trie.remove(&[]), None);
-        assert_eq!(trie.remove(&[1]), Some(Leaf::new(vec![1], '1')));
+        assert!(trie.is_empty(), "failed is empty\n{trie:?}");
         assert_eq!(trie, Trie::default());
-        assert_eq!(trie.remove(&[1]), None);
-    }
-    #[test]
-    fn get_deepest_leaf() {
-        let mut trie = Trie::from_iter([(vec![0], "0"), (vec![0; 3], "000"), (vec![0, 1], "01")]);
-        assert_eq!(trie.get_deepest_leaf(&[]), None);
-        assert_eq!(trie.insert(vec![], ""), None);
-        assert_eq!(trie.get_deepest_leaf(&[]), Some(Leaf::new(&vec![], &"")));
-        assert_eq!(trie.get_deepest_leaf(&[0]), Some(Leaf::new(&vec![0], &"0")));
-        assert_eq!(
-            trie.get_deepest_leaf(&[0, 0]),
-            Some(Leaf::new(&vec![0], &"0"))
-        );
-        assert_eq!(
-            trie.get_deepest_leaf(&[0; 5]),
-            Some(Leaf::new(&vec![0; 3], &"000"))
-        );
-        assert_eq!(
-            trie.get_deepest_leaf(&[0, 1]),
-            Some(Leaf::new(&vec![0, 1], &"01"))
-        );
     }
 }

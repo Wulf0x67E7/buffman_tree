@@ -12,7 +12,7 @@ use quickcheck_macros::quickcheck;
 use slab::Slab;
 
 use crate::{
-    trie2::Trie,
+    trie::Trie,
     util::{BTrie, debug_fn},
 };
 

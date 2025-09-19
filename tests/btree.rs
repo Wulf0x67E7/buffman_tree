@@ -1,6 +1,6 @@
 use std::{borrow::Borrow, collections::BTreeMap, hint::black_box, ops::Bound};
 
-use buffman_tree::{Key, Leaf, Trie};
+use buffman_tree::Trie;
 use quickcheck::{Arbitrary, Gen};
 use quickcheck_macros::quickcheck;
 use rand::{RngCore as _, SeedableRng as _, seq::SliceRandom as _};
@@ -9,12 +9,13 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 trait MapExt<K, Q: ?Sized, V> {
     fn get_longest_prefix(&self, key: &Q) -> Option<(&K, &V)>;
 }
-impl<K: Key, Q, V> MapExt<K, Q, V> for Trie<K, V>
+impl<K, Q: IntoIterator<Item: Ord>, V> MapExt<K, Q, V> for Trie<K::Item, (K, V)>
 where
-    Q: Key<Piece = K::Piece>,
+    K: IntoIterator<Item: Ord + Borrow<Q::Item>>,
+    for<'a> &'a Q: IntoIterator<Item = &'a Q::Item>,
 {
     fn get_longest_prefix(&self, key: &Q) -> Option<(&K, &V)> {
-        self.get_deepest_leaf(key).map(Leaf::unwrap)
+        self.get_deepest(key).map(|(k, v)| (k, v))
     }
 }
 impl<K: Ord + Borrow<[Q]>, Q: PartialEq + Ord, V> MapExt<K, [Q], V> for BTreeMap<K, V> {

@@ -1,8 +1,6 @@
 mod trie;
 pub use trie::*;
-pub mod trie2;
 #[cfg(test)]
-
 mod tests {
     #[allow(unused_imports)]
     use super::*;

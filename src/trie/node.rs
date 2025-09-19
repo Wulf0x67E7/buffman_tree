@@ -1,238 +1,303 @@
-use slab::Slab;
+use crate::{
+    trie::{
+        Handle, LeafHandle, Trie,
+        branch::{Branch, BranchHandle},
+        handle::Shared,
+    },
+    util::debug_fn,
+};
+use std::{fmt::Debug, mem::replace};
 
-use crate::{Branch, Key, Leaf, handle::Handle};
-use std::mem::{replace, take};
-
-pub type NodeId<K, V> = Handle<Node<K, V>>;
-
-#[derive(Debug, PartialEq)]
-pub enum Node<K: Key, V> {
-    None,
-    Leaf(bool, Leaf<K, V>),
-    Branch(Branch<K, V>),
-    Full(Leaf<K, V>, Branch<K, V>),
+#[derive(Default)]
+pub enum DataHandle<K, V> {
+    #[default]
+    Empty,
+    Leaf(LeafHandle<V>),
+    Branch(BranchHandle<K, V>),
+    Full {
+        leaf: LeafHandle<V>,
+        branch: BranchHandle<K, V>,
+    },
 }
-impl<K: Key, V> Default for Node<K, V> {
-    fn default() -> Self {
-        Self::None
+impl<K, V> Debug for DataHandle<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "Empty"),
+            Self::Leaf(arg0) => f.debug_tuple("Leaf").field(arg0).finish(),
+            Self::Branch(arg0) => f.debug_tuple("Branch").field(arg0).finish(),
+            Self::Full { leaf, branch } => f
+                .debug_struct("Full")
+                .field("leaf", leaf)
+                .field("branch", branch)
+                .finish(),
+        }
     }
 }
-impl<K: Key, V> Node<K, V> {
-    pub fn is_none(&self) -> bool {
-        matches!(self, Node::None)
+impl<K, V> From<()> for DataHandle<K, V> {
+    fn from((): ()) -> Self {
+        Self::Empty
+    }
+}
+impl<K, V> From<LeafHandle<V>> for DataHandle<K, V> {
+    fn from(handle: LeafHandle<V>) -> Self {
+        Self::Leaf(handle)
+    }
+}
+impl<K, V> From<BranchHandle<K, V>> for DataHandle<K, V> {
+    fn from(handle: BranchHandle<K, V>) -> Self {
+        Self::Branch(handle)
+    }
+}
+impl<K, V> From<(LeafHandle<V>, BranchHandle<K, V>)> for DataHandle<K, V> {
+    fn from((leaf, branch): (LeafHandle<V>, BranchHandle<K, V>)) -> Self {
+        Self::Full { leaf, branch }
+    }
+}
+impl<K, V> DataHandle<K, V> {
+    pub fn leak(&self) -> Self {
+        match self {
+            DataHandle::Empty => DataHandle::Empty,
+            DataHandle::Leaf(handle) => DataHandle::Leaf(handle.leak()),
+            DataHandle::Branch(handle) => DataHandle::Branch(handle.leak()),
+            DataHandle::Full { leaf, branch } => DataHandle::Full {
+                leaf: leaf.leak(),
+                branch: branch.leak(),
+            },
+        }
+    }
+    pub fn leaf(&self) -> Option<LeafHandle<V>> {
+        match self.leak() {
+            DataHandle::Empty | DataHandle::Branch(_) => None,
+            DataHandle::Leaf(leaf) | DataHandle::Full { leaf, .. } => Some(leaf),
+        }
+    }
+    pub fn branch(&self) -> Option<BranchHandle<K, V>> {
+        match self.leak() {
+            DataHandle::Empty | DataHandle::Leaf(_) => None,
+            DataHandle::Branch(branch) | DataHandle::Full { branch, .. } => Some(branch),
+        }
+    }
+    pub fn leaf_branch(&self) -> (Option<LeafHandle<V>>, Option<BranchHandle<K, V>>) {
+        match self.leak() {
+            DataHandle::Empty => (None, None),
+            DataHandle::Leaf(leaf) => (Some(leaf), None),
+            DataHandle::Branch(branch) => (None, Some(branch)),
+            DataHandle::Full { leaf, branch } => (Some(leaf), Some(branch)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Node<K, V> {
+    prefix: Vec<K>,
+    handle: DataHandle<K, V>,
+}
+impl<K, V> Default for Node<K, V> {
+    fn default() -> Self {
+        Self {
+            prefix: Default::default(),
+            handle: Default::default(),
+        }
+    }
+}
+impl<K, V> Node<K, V> {
+    pub fn from<T: Into<DataHandle<K, V>>>(prefix: Vec<K>, handle: T) -> Self {
+        Self {
+            prefix,
+            handle: handle.into(),
+        }
     }
     pub fn is_empty(&self) -> bool {
-        match self {
-            Node::None => true,
-            Node::Leaf(_, _) | Node::Full(_, _) => false,
-            Node::Branch(branch) => branch.is_empty(),
+        match &self.handle {
+            DataHandle::Empty => true,
+            _ => false,
         }
     }
-    pub fn as_branch(&self) -> Option<&Branch<K, V>> {
-        if let Self::Branch(branch) | Self::Full(_, branch) = self {
-            Some(branch)
-        } else {
-            None
-        }
+    pub fn prefix(&self) -> &Vec<K> {
+        &self.prefix
     }
-    pub fn as_branch_mut(&mut self) -> Option<&mut Branch<K, V>> {
-        if let Self::Branch(branch) | Self::Full(_, branch) = self {
-            Some(branch)
-        } else {
-            None
-        }
+    pub(super) fn prefix_mut(&mut self) -> &mut Vec<K> {
+        &mut self.prefix
     }
-    pub fn make_branch(&mut self) -> (&mut Branch<K, V>, Option<Leaf<K, V>>) {
-        match self {
-            Node::None => {
-                *self = Self::Branch(Branch::default());
-                let Node::Branch(branch) = self else {
-                    unreachable!()
-                };
-                (branch, None)
-            }
-            Node::Leaf(_, _) => {
-                let Node::Leaf(shallow, leaf) = take(self) else {
-                    unreachable!();
-                };
-                let leaf = if shallow {
-                    *self = Self::Branch(Branch::default());
-                    Some(leaf)
-                } else {
-                    *self = Self::Full(leaf, Branch::default());
-                    None
-                };
-                let (Node::Branch(branch) | Node::Full(_, branch)) = self else {
-                    unreachable!()
-                };
-                (branch, leaf)
-            }
-            Node::Branch(branch) | Node::Full(_, branch) => (branch, None),
-        }
+    pub fn branch(&self) -> Option<BranchHandle<K, V>> {
+        self.handle.branch()
     }
-    pub fn insert_child_handle<'a>(
-        &mut self,
-        key: K::Piece,
-        child: Handle<Self>,
-    ) -> (Option<Handle<Self>>, Option<Leaf<K, V>>) {
-        let (branch, leaf) = self.make_branch();
-        (branch.insert_handle(key, child), leaf)
+    pub fn get_branch<'a>(&self, branches: &'a Shared<Branch<K, V>>) -> Option<&'a Branch<K, V>> {
+        Some(self.handle.branch()?.get(branches))
     }
-    pub fn insert_child<'a>(
-        &mut self,
-        key: K::Piece,
-        shared: &'a mut Slab<Self>,
-    ) -> (&'a mut Node<K, V>, Option<Leaf<K, V>>) {
-        let (branch, leaf) = self.make_branch();
-        (branch.get_or_insert(key, shared), leaf)
-    }
-    pub fn get_child_handle(&self, key: K::Piece) -> Option<&Handle<Self>> {
-        self.as_branch()?.get_handle(&key)
-    }
-    pub fn get_child<'a>(&self, key: K::Piece, shared: &'a Slab<Self>) -> Option<&'a Node<K, V>> {
-        self.as_branch()?.get(key, shared)
-    }
-    pub fn get_child_mut<'a>(
-        &mut self,
-        key: K::Piece,
-        shared: &'a mut Slab<Self>,
-    ) -> Option<&'a mut Node<K, V>> {
-        self.as_branch_mut()?.get_mut(key, shared)
-    }
-    pub fn as_leaf(&self) -> Option<&Leaf<K, V>> {
-        if let Self::Leaf(_, leaf) | Self::Full(leaf, _) = self {
-            Some(leaf)
-        } else {
-            None
-        }
-    }
-    pub fn as_leaf_mut(&mut self) -> Option<&mut Leaf<K, V>> {
-        if let Self::Leaf(_, leaf) | Self::Full(leaf, _) = self {
-            Some(leaf)
-        } else {
-            None
-        }
-    }
-    pub fn make_leaf(
-        &mut self,
-        shallow: bool,
-        key: K,
-        value: V,
-    ) -> Option<Result<Leaf<K, V>, Leaf<K, V>>> {
-        let new = Leaf::from(key, value);
-        match self {
-            Node::None => {
-                *self = Node::Leaf(shallow, new);
-                None
-            }
-            Node::Branch(_) => {
-                let Node::Branch(branch) = take(self) else {
-                    unreachable!();
-                };
-                *self = Self::Full(new, branch);
-                None
-            }
-            Node::Leaf(shallow, leaf) => {
-                if *shallow {
-                    debug_assert!(leaf.key().len() > new.key().len());
-                    Some(Err(replace(leaf, new)))
-                } else {
-                    debug_assert!(leaf.key().equal(new.key()));
-                    Some(Ok(replace(leaf, new)))
-                }
-            }
-            Node::Full(leaf, _) => {
-                debug_assert!(leaf.key().equal(new.key()));
-                Some(Ok(replace(leaf, new)))
-            }
-        }
-    }
-    pub fn take_leaf(&mut self) -> Option<Leaf<K, V>> {
-        match self {
-            Node::None => {
-                debug_assert!(false);
-                None
-            }
-            Node::Leaf(_, _) => {
-                let Node::Leaf(_, leaf) = take(self) else {
-                    unreachable!();
-                };
-                Some(leaf)
-            }
-            Node::Branch(_) => None,
-            Node::Full(_, _) => {
-                let Node::Full(leaf, branch) = take(self) else {
-                    unreachable!();
-                };
-                *self = Node::Branch(branch);
-                Some(leaf)
-            }
-        }
-    }
-    pub fn as_leaf_branch(&self) -> (Option<&Leaf<K, V>>, Option<&Branch<K, V>>) {
-        match self {
-            Node::None => (None, None),
-            Node::Leaf(_, leaf) => (Some(leaf), None),
-            Node::Branch(branch) => (None, Some(branch)),
-            Node::Full(leaf, branch) => (Some(leaf), Some(branch)),
-        }
-    }
-    pub fn as_leaf_branch_mut(&mut self) -> (Option<&mut Leaf<K, V>>, Option<&mut Branch<K, V>>) {
-        match self {
-            Node::None => (None, None),
-            Node::Leaf(_, leaf) => (Some(leaf), None),
-            Node::Branch(branch) => (None, Some(branch)),
-            Node::Full(leaf, branch) => (Some(leaf), Some(branch)),
-        }
-    }
-    pub fn as_leaf_child_handle(
+    pub fn get_branch_mut<'a>(
         &self,
-        key: Option<K::Piece>,
-    ) -> (Option<&Leaf<K, V>>, Option<&Handle<Self>>) {
-        let (leaf, branch) = self.as_leaf_branch();
-        (
-            leaf,
-            branch
-                .zip(key)
-                .and_then(|(branch, key)| branch.get_handle(&key)),
-        )
+        branches: &'a mut Shared<Branch<K, V>>,
+    ) -> Option<&'a mut Branch<K, V>> {
+        Some(self.handle.branch()?.get_mut(branches))
     }
-    pub fn as_leaf_child_handle_mut(
-        &mut self,
-        key: Option<K::Piece>,
-    ) -> (Option<&mut Leaf<K, V>>, Option<&Handle<Self>>) {
-        let (leaf, branch) = self.as_leaf_branch_mut();
-        (
-            leaf,
-            branch
-                .zip(key)
-                .and_then(|(branch, key)| branch.get_handle(&key)),
-        )
+    pub fn leaf(&self) -> Option<LeafHandle<V>> {
+        self.handle.leaf()
     }
-    pub fn as_leaf_child<'a>(
+    pub fn get_leaf<'a>(&self, leaves: &'a Shared<V>) -> Option<&'a V> {
+        Some(self.handle.leaf()?.get(leaves))
+    }
+    pub fn get_leaf_mut<'a>(&self, leaves: &'a mut Shared<V>) -> Option<&'a mut V> {
+        Some(self.handle.leaf()?.get_mut(leaves))
+    }
+    pub fn leaf_branch(&self) -> (Option<LeafHandle<V>>, Option<BranchHandle<K, V>>) {
+        self.handle.leaf_branch()
+    }
+    pub fn get_leaf_branch<'a, 'b>(
         &self,
-        key: Option<K::Piece>,
-        shared: &'a Slab<Self>,
-    ) -> (Option<&Leaf<K, V>>, Option<&'a Node<K, V>>) {
-        let (leaf, branch) = self.as_leaf_branch();
+        leaves: &'a Shared<V>,
+        branches: &'b Shared<Branch<K, V>>,
+    ) -> (Option<&'a V>, Option<&'b Branch<K, V>>) {
+        let (leaf, branch) = self.leaf_branch();
         (
-            leaf,
-            branch
-                .zip(key)
-                .and_then(|(branch, key)| branch.get(key, shared)),
+            leaf.map(|leaf| leaf.get(leaves)),
+            branch.map(|branch| branch.get(branches)),
         )
     }
-    pub fn as_leaf_child_mut<'a>(
-        &mut self,
-        key: Option<K::Piece>,
-        shared: &'a mut Slab<Self>,
-    ) -> (Option<&mut Leaf<K, V>>, Option<&'a mut Node<K, V>>) {
-        let (leaf, branch) = self.as_leaf_branch_mut();
+    pub fn get_leaf_branch_mut<'a, 'b>(
+        &self,
+        leaves: &'a mut Shared<V>,
+        branches: &'b mut Shared<Branch<K, V>>,
+    ) -> (Option<&'a mut V>, Option<&'b mut Branch<K, V>>) {
+        let (leaf, branch) = self.leaf_branch();
         (
-            leaf,
-            branch
-                .zip(key)
-                .and_then(|(branch, key)| branch.get_mut(key, shared)),
+            leaf.map(|leaf| leaf.get_mut(leaves)),
+            branch.map(|branch| branch.get_mut(branches)),
         )
+    }
+    pub fn node_debug<'a>(&'a self, trie: &'a Trie<K, V>) -> impl 'a + Debug
+    where
+        K: Debug,
+        V: Debug,
+    {
+        debug_fn(|f| {
+            let mut f = f.debug_struct(match self.handle {
+                DataHandle::Empty => "Node::Empty",
+                DataHandle::Leaf(_) => "Node::Leaf",
+                DataHandle::Branch(_) => "Node::Branch",
+                DataHandle::Full { .. } => "Node::Full",
+            });
+            if !self.prefix().is_empty() {
+                f.field("prefix", &self.prefix);
+            }
+            if let Some(leaf) = self.leaf() {
+                f.field("leaf", &leaf.get(&trie.leaves));
+            }
+            if let Some(branch) = self.branch() {
+                f.field("branch", &branch.get(&trie.branches).branch_debug(trie));
+            }
+            f.finish()
+        })
     }
 }
+impl<K: Ord, V> Node<K, V> {
+    pub fn make_leaf(&mut self, leaves: &mut Shared<V>, value: V) -> Option<V> {
+        match self.handle.leak() {
+            DataHandle::Empty => {
+                self.handle = DataHandle::Leaf(Handle::new(leaves, value));
+                None
+            }
+            DataHandle::Leaf(leaf) | DataHandle::Full { leaf, .. } => {
+                Some(leaf.replace(leaves, value))
+            }
+            DataHandle::Branch(handle) => {
+                self.handle = DataHandle::Full {
+                    leaf: Handle::new(leaves, value),
+                    branch: handle,
+                };
+                None
+            }
+        }
+    }
+    pub fn make_leaf_at(
+        &mut self,
+        branches: &mut Shared<Branch<K, V>>,
+        leaves: &mut Shared<V>,
+        value: V,
+        leaf_at: usize,
+    ) -> (Option<V>, Option<(K, Node<K, V>)>) {
+        assert!(leaf_at <= self.prefix.len());
+        let node = if leaf_at < self.prefix.len() {
+            let node = self.make_branch_at(branches, leaf_at).1;
+            debug_assert_eq!(self.leaf(), None);
+            node
+        } else {
+            None
+        };
+        debug_assert_eq!(leaf_at, self.prefix.len());
+        (self.make_leaf(leaves, value), node)
+    }
+    pub fn take_leaf(&mut self, leaves: &mut Shared<V>) -> Option<V> {
+        match self.handle.leak() {
+            DataHandle::Empty | DataHandle::Branch(_) => None,
+            DataHandle::Leaf(leaf) => {
+                self.handle = DataHandle::Empty;
+                self.prefix.clear();
+                Some(leaf.remove(leaves))
+            }
+            DataHandle::Full { leaf, branch } => {
+                self.handle = DataHandle::Branch(branch);
+                Some(leaf.remove(leaves))
+            }
+        }
+    }
+    pub fn make_branch(&mut self, branches: &mut Shared<Branch<K, V>>) -> BranchHandle<K, V> {
+        let branch_handle: BranchHandle<K, V>;
+        self.handle = match &self.handle {
+            DataHandle::Empty => {
+                branch_handle = Handle::new_default(branches).into();
+                branch_handle.leak().into()
+            }
+            DataHandle::Leaf(leaf) => {
+                branch_handle = Handle::new_default(branches).into();
+                DataHandle::Full {
+                    leaf: leaf.leak(),
+                    branch: branch_handle.leak(),
+                }
+            }
+            handle @ DataHandle::Branch(branch) | handle @ DataHandle::Full { branch, .. } => {
+                branch_handle = branch.leak();
+                handle.leak()
+            }
+        };
+        branch_handle
+    }
+    pub fn make_branch_at(
+        &mut self,
+        branches: &mut Shared<Branch<K, V>>,
+        branch_at: usize,
+    ) -> (BranchHandle<K, V>, Option<(K, Node<K, V>)>) {
+        assert!(branch_at <= self.prefix().len());
+        let node = if branch_at < self.prefix().len() {
+            let mut drain = self.prefix.drain(branch_at..);
+            let key = drain.next().unwrap();
+            let prefix = drain.collect();
+            let node = match replace(&mut self.handle, DataHandle::Empty) {
+                DataHandle::Empty => Node::from(prefix, ()),
+                DataHandle::Leaf(leaf) => Node::from(prefix, leaf),
+                DataHandle::Branch(branch) => Node::from(prefix, branch),
+                DataHandle::Full { leaf, branch } => Node::from(prefix, (leaf, branch)),
+            };
+            Some((key, node))
+        } else {
+            None
+        };
+        debug_assert_eq!(branch_at, self.prefix.len());
+        (self.make_branch(branches), node)
+    }
+    pub fn take_branch(&mut self) -> Option<BranchHandle<K, V>> {
+        match self.handle.leak() {
+            DataHandle::Empty | DataHandle::Leaf(_) => None,
+            DataHandle::Branch(branch) => {
+                self.handle = DataHandle::Empty;
+                self.prefix.clear();
+                Some(branch)
+            }
+            DataHandle::Full { leaf, branch } => {
+                self.handle = DataHandle::Leaf(leaf);
+                Some(branch)
+            }
+        }
+    }
+}
+pub type NodeHandle<K, V> = Handle<Node<K, V>>;
