@@ -3,6 +3,7 @@
         "btrie",
         "buffman",
         "quickcheck",
+        "quicktest",
         "Seedable",
         "vnode",
         "Xoshiro"

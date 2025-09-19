@@ -1,5 +1,5 @@
 use crate::{testing::BTrie, trie::Trie, util::debug_fn};
-use quickcheck::{Arbitrary, Gen, TestResult, empty_shrinker, single_shrinker};
+use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult, empty_shrinker, single_shrinker};
 use std::{
     borrow::Borrow,
     collections::BTreeMap,
@@ -290,4 +290,20 @@ where
             Op::Remove => self.remove(key.borrow()),
         }
     }
+}
+
+#[test]
+fn procedure_shrinking() {
+    fn test(proc: Procedure<(Vec<u8>, usize)>) -> TestResult {
+        if proc.actions().any(|action| action.item().0.len() > 3) {
+            TestResult::failed()
+        } else {
+            TestResult::passed()
+        }
+    }
+    let ret = QuickCheck::new()
+        .quicktest(test as fn(Procedure<(Vec<u8>, usize)>) -> TestResult)
+        .unwrap_err();
+    let proc = "TestResult { status: Fail, arguments: [\"Procedure([Action { op: Get, item: ([0, 0, 0, 0], 0) }])\"], err: None }";
+    assert_eq!(format!("{ret:?}"), format!("{proc}"));
 }
