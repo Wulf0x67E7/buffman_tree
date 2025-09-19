@@ -90,7 +90,11 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
         let empty_shallow = self.root.get(&self.nodes).is_empty_node();
         debug_assert_eq!(
             empty_shallow,
-            self.branches.is_empty() && self.leaves.is_empty() && self.nodes.len() == 1
+            self.branches.is_empty() && self.leaves.is_empty() && self.nodes.len() == 1,
+            "{} == 0 && {} == 0 && {} == 1",
+            self.branches.len(),
+            self.leaves.len(),
+            self.nodes.len()
         );
         empty_shallow
     }
@@ -172,9 +176,13 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
             .dive(
                 self,
                 key,
-                |node, this| Some(node.as_node(&this.nodes).is_some()),
-                |node, this| node.take_leaf(this),
-                |node, this| node.prune_branch(this),
+                |node, this, _| Some(node.as_node(&this.nodes).is_some()),
+                |node, this| {
+                    let ret = node.take_leaf(this)?;
+                    node.prune_branch(this);
+                    Some(ret)
+                },
+                |node, this, _| node.prune_branch(this).is_some(),
             )
             .ok()
     }
@@ -201,7 +209,7 @@ impl<K: Ord, V> Trie<K, V> {
         K: Borrow<Q>,
     {
         VNode::start(self.root.leak())
-            .descend(self, key, |_, _| true)
+            .descend(self, key, |_, _, _| true)
             .ok()?
             .leaf_handle(self)
     }
@@ -231,7 +239,11 @@ mod tests {
     }
     #[test]
     fn insert_get_case() {
-        let values = BTreeMap::from_iter([(vec![0, 0], "00".into()), (vec![1], "1".into())]);
+        let values = BTreeMap::from_iter([
+            (vec![], "_".into()),
+            (vec![1], "1".into()),
+            (vec![1, 0], "10".into()),
+        ]);
         let searches = vec![vec![]];
         insert_get(values, searches);
     }
@@ -259,7 +271,11 @@ mod tests {
         }
         for key in &searches {
             assert_eq!(btree.remove(key), trie.remove(key), "failed remove {key:?}");
-            assert_eq!(btree.is_empty(), trie.is_empty());
+            assert_eq!(
+                btree.is_empty(),
+                trie.is_empty(),
+                "failed is empty\n{trie:?}"
+            );
         }
 
         assert!(trie.is_empty(), "failed is empty\n{trie:?}");

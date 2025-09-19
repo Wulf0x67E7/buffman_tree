@@ -5,13 +5,14 @@ use crate::{
         branch::{Branch, BranchHandle},
         node::{Node, NodeHandle},
     },
+    util::OptExt,
 };
 use std::{
     borrow::Borrow,
     cmp::Ordering,
     fmt::Debug,
-    iter,
-    mem::{transmute, transmute_copy},
+    iter::{self, Peekable},
+    mem::{take, transmute},
 };
 
 pub struct VNode<K, V> {
@@ -83,14 +84,27 @@ impl<K: Ord, V> VNode<K, V> {
         }
     }
     pub fn make_descend(&self, trie: &mut Trie<K, V>, key: impl IntoIterator<Item = K>) -> Self {
-        let mut node = self.leak();
-        let mut key = key.into_iter();
+        let mut vnode = self.leak();
+        let mut key = key.into_iter().peekable();
         loop {
-            if let Some(key) = key.next() {
-                node = node.make_next(trie, key);
-            } else {
-                break node;
+            if vnode.empty_node(&trie.nodes) {
+                vnode
+                    .handle
+                    .get_mut(&mut trie.nodes)
+                    .prefix_mut()
+                    .extend(key);
+                break vnode.skip_prefix(trie);
             }
+            vnode = vnode.try_skip_prefix(trie, &mut key);
+            let Some(key) = key.next() else {
+                break vnode;
+            };
+            vnode = Self::start(
+                vnode
+                    .make_branch(trie)
+                    .get_mut(&mut trie.branches)
+                    .get_or_insert(&mut trie.nodes, key),
+            );
         }
     }
     /// Descends down [Trie] following 'key' while having immutable access.
@@ -102,14 +116,14 @@ impl<K: Ord, V> VNode<K, V> {
         &self,
         trie: &Trie<K, V>,
         key: impl IntoIterator<Item = &'a Q>,
-        mut inspect: impl FnMut(Self, &Trie<K, V>) -> bool,
+        mut inspect: impl FnMut(Self, &Trie<K, V>, &'a Q) -> bool,
     ) -> Result<Self, Self>
     where
         K: Borrow<Q>,
     {
         let mut node = self.leak();
         for key in key {
-            node = inspect(node.leak(), trie)
+            node = inspect(node.leak(), trie, key)
                 .then_some(())
                 .and_then(|()| node.next(trie, key))
                 .ok_or(node)?;
@@ -125,14 +139,14 @@ impl<K: Ord, V> VNode<K, V> {
         &self,
         trie: &mut Trie<K, V>,
         key: impl IntoIterator<Item = &'a Q>,
-        mut inspect: impl FnMut(Self, &mut Trie<K, V>) -> bool,
+        mut inspect: impl FnMut(Self, &mut Trie<K, V>, &'a Q) -> bool,
     ) -> Result<Self, Self>
     where
         K: Borrow<Q>,
     {
         let mut node = self.leak();
         for key in key {
-            node = inspect(node.leak(), trie)
+            node = inspect(node.leak(), trie, key)
                 .then_some(())
                 .and_then(|()| node.next(trie, key))
                 .ok_or(node)?;
@@ -190,26 +204,26 @@ impl<K: Ord, V> VNode<K, V> {
         &self,
         trie: &mut Trie<K, V>,
         key: impl IntoIterator<Item = &'a Q>,
-        mut inspect_descend: impl FnMut(Self, &mut Trie<K, V>) -> Option<bool>,
+        mut inspect_descend: impl FnMut(Self, &mut Trie<K, V>, &'a Q) -> Option<bool>,
         inspect_target: impl FnOnce(Self, &mut Trie<K, V>) -> Option<T>,
-        mut inspect_ascend: impl FnMut(Self, &mut Trie<K, V>) -> bool,
+        mut inspect_ascend: impl FnMut(Self, &mut Trie<K, V>, &'a Q) -> bool,
     ) -> Result<T, Self>
     where
         K: Borrow<Q>,
     {
         let mut stack = vec![];
-        let target = self.descend_mut(trie, key, |node, trie| {
-            inspect_descend(node.leak(), trie).map_or(false, |remember| {
+        let target = self.descend_mut(trie, key, |node, trie, key| {
+            inspect_descend(node.leak(), trie, key).map_or(false, |remember| {
                 if remember {
-                    stack.push(node.leak());
+                    stack.push((node.leak(), key));
                 }
                 true
             })
         })?;
         stack.reverse();
         let ret = inspect_target(target.leak(), trie).ok_or(target)?;
-        for node in stack {
-            if !inspect_ascend(node, trie) {
+        for (node, key) in stack {
+            if !inspect_ascend(node, trie, key) {
                 break;
             }
         }
@@ -219,6 +233,24 @@ impl<K: Ord, V> VNode<K, V> {
         let handle = self.handle.leak();
         let prefix_len = handle.get(&trie.nodes).prefix().len();
         Self { prefix_len, handle }
+    }
+    pub fn try_skip_prefix(
+        &self,
+        trie: &Trie<K, V>,
+        key: &mut Peekable<impl Iterator<Item = K>>,
+    ) -> Self {
+        let handle = self.handle.leak();
+        let remaining_prefix = &handle.get(&trie.nodes).prefix()[self.prefix_len..];
+        let mut match_len = 0;
+        while let Some(k) = remaining_prefix.get(match_len)
+            && let Some(_) = key.next_if_eq(k)
+        {
+            match_len += 1;
+        }
+        Self {
+            prefix_len: self.prefix_len + match_len,
+            handle,
+        }
     }
     pub fn into_iter(&self, mut trie: Trie<K, V>) -> impl use<K, V> + Iterator<Item = V> {
         let mut stack = vec![self.leak()];
@@ -283,19 +315,31 @@ impl<K: Ord, V> VNode<K, V> {
 
 /// Manipulation methods
 impl<K: Ord, V> VNode<K, V> {
-    pub fn as_node<'a>(&self, nodes: &'a Shared<Node<K, V>>) -> Option<&'a Node<K, V>> {
+    pub fn empty_node(&self, nodes: &Shared<Node<K, V>>) -> bool {
+        self.handle.get(nodes).is_empty_node()
+    }
+    pub fn is_node_handle(&self, nodes: &Shared<Node<K, V>>) -> NodeHandle<K, V> {
+        self.as_node_handle(nodes)
+            .expect("VNode isn't actual Node.")
+    }
+    pub fn is_node<'a>(&self, nodes: &'a Shared<Node<K, V>>) -> &'a Node<K, V> {
+        self.is_node_handle(nodes).get(nodes)
+    }
+    pub fn is_node_mut<'a>(&self, nodes: &'a mut Shared<Node<K, V>>) -> &'a mut Node<K, V> {
+        self.is_node_handle(nodes).get_mut(nodes)
+    }
+    pub fn as_node_handle(&self, nodes: &Shared<Node<K, V>>) -> Option<NodeHandle<K, V>> {
         match self.prefix_len.cmp(&self.handle.get(nodes).prefix().len()) {
             Ordering::Less => None,
-            Ordering::Equal => Some(self.handle.get(nodes)),
+            Ordering::Equal => Some(self.handle.leak()),
             Ordering::Greater => panic!("Invalid VNode"),
         }
     }
+    pub fn as_node<'a>(&self, nodes: &'a Shared<Node<K, V>>) -> Option<&'a Node<K, V>> {
+        Some(self.as_node_handle(nodes)?.get(nodes))
+    }
     pub fn as_node_mut<'a>(&self, nodes: &'a mut Shared<Node<K, V>>) -> Option<&'a mut Node<K, V>> {
-        match self.prefix_len.cmp(&self.handle.get(nodes).prefix().len()) {
-            Ordering::Less => None,
-            Ordering::Equal => Some(self.handle.get_mut(nodes)),
-            Ordering::Greater => panic!("Invalid VNode"),
-        }
+        Some(self.as_node_handle(nodes)?.get_mut(nodes))
     }
     pub fn make_leaf(&self, trie: &mut Trie<K, V>, value: V) -> Option<V> {
         let Trie {
@@ -309,6 +353,7 @@ impl<K: Ord, V> VNode<K, V> {
             Ordering::Less => {
                 let (value, new_node) = node.make_leaf_at(branches, leaves, value, self.prefix_len);
                 if let Some((key, new_node)) = new_node {
+                    debug_assert!(!new_node.is_empty_node());
                     node.get_branch_mut(branches)
                         .unwrap()
                         .insert(key, Handle::new(nodes, new_node));
@@ -338,6 +383,7 @@ impl<K: Ord, V> VNode<K, V> {
             Ordering::Less => {
                 let (branch, new_node) = node.make_branch_at(&mut trie.branches, self.prefix_len);
                 if let Some((key, new_node)) = new_node {
+                    debug_assert!(!new_node.is_empty_node());
                     node.get_branch_mut(&mut trie.branches)
                         .unwrap()
                         .insert(key, Handle::new(&mut trie.nodes, new_node));
@@ -354,17 +400,47 @@ impl<K: Ord, V> VNode<K, V> {
     pub fn branch<'a>(&self, trie: &'a Trie<K, V>) -> Option<&'a Branch<K, V>> {
         self.as_node(&trie.nodes)?.get_branch(&trie.branches)
     }
-    pub fn prune_branch(&self, trie: &mut Trie<K, V>) -> bool {
-        if let Some(branch) = self
-            .as_node(&trie.nodes)
-            .expect("VNode isn't actual Node and cannot be pruned.")
-            .branch()
-            && branch.get_mut(&mut trie.branches).prune(&mut trie.nodes)
-            && let Some(branch) = self.handle.get_mut(&mut trie.nodes).take_branch()
+    pub fn branch_mut<'a>(&mut self, trie: &'a mut Trie<K, V>) -> Option<&'a mut Branch<K, V>> {
+        self.as_node_mut(&mut trie.nodes)?
+            .get_branch_mut(&mut trie.branches)
+    }
+    pub fn prune_branch(&self, trie: &mut Trie<K, V>) -> Option<()> {
+        if let (leaf, Some(branch)) = self
+            .is_node(&trie.nodes)
+            .get_leaf_branch_mut(&mut trie.leaves, &mut trie.branches)
+            && let Some(displaced) = branch.prune(&mut trie.nodes)
         {
-            let branch = branch.remove(&mut trie.branches);
             debug_assert!(branch.is_empty());
+            if let Some((key, displaced)) = displaced {
+                if leaf.is_none() {
+                    let mut displaced = displaced.remove(&mut trie.nodes);
+                    let mut prefix = take(self.is_node_mut(&mut trie.nodes).prefix_mut());
+                    let tmp = displaced.prefix_mut();
+                    prefix.push(key);
+                    prefix.extend(tmp.drain(..));
+                    *tmp = prefix;
+                    let old = self
+                        .handle
+                        .replace(&mut trie.nodes, displaced)
+                        .branch()
+                        .unwrap()
+                        .remove(&mut trie.branches);
+                    debug_assert!(old.is_empty());
+                } else {
+                    let old = branch.insert(key, displaced);
+                    debug_assert_eq!(old, None);
+                }
+            } else {
+                let branch = self
+                    .is_node_mut(&mut trie.nodes)
+                    .take_branch()
+                    .unwrap()
+                    .remove(&mut trie.branches);
+                debug_assert!(branch.is_empty());
+            }
+            leaf.invert(())
+        } else {
+            self.handle.get(&trie.nodes).is_empty_node().then_some(())
         }
-        self.handle.get(&trie.nodes).is_empty_node()
     }
 }

@@ -70,10 +70,24 @@ impl<K, V> DataHandle<K, V> {
             DataHandle::Leaf(leaf) | DataHandle::Full { leaf, .. } => Some(leaf),
         }
     }
+    pub fn just_branch(&self) -> Option<BranchHandle<K, V>> {
+        match self.leak() {
+            DataHandle::Empty | DataHandle::Leaf(_) | DataHandle::Full { .. } => None,
+            DataHandle::Branch(branch) => Some(branch),
+        }
+    }
     pub fn branch(&self) -> Option<BranchHandle<K, V>> {
         match self.leak() {
             DataHandle::Empty | DataHandle::Leaf(_) => None,
             DataHandle::Branch(branch) | DataHandle::Full { branch, .. } => Some(branch),
+        }
+    }
+    pub fn leaf_branch(&self) -> (Option<LeafHandle<V>>, Option<BranchHandle<K, V>>) {
+        match self.leak() {
+            DataHandle::Empty => (None, None),
+            DataHandle::Leaf(leaf) => (Some(leaf), None),
+            DataHandle::Branch(branch) => (None, Some(branch)),
+            DataHandle::Full { leaf, branch } => (Some(leaf), Some(branch)),
         }
     }
 }
@@ -117,6 +131,9 @@ impl<K, V> Node<K, V> {
     pub(super) fn prefix_mut(&mut self) -> &mut Vec<K> {
         &mut self.prefix
     }
+    pub fn just_branch(&self) -> Option<BranchHandle<K, V>> {
+        self.handle.just_branch()
+    }
     pub fn branch(&self) -> Option<BranchHandle<K, V>> {
         self.handle.branch()
     }
@@ -137,6 +154,31 @@ impl<K, V> Node<K, V> {
     }
     pub fn get_leaf_mut<'a>(&self, leaves: &'a mut Shared<V>) -> Option<&'a mut V> {
         Some(self.handle.leaf()?.get_mut(leaves))
+    }
+    pub fn leaf_branch(&self) -> (Option<LeafHandle<V>>, Option<BranchHandle<K, V>>) {
+        self.handle.leaf_branch()
+    }
+    pub fn get_leaf_branch<'a, 'b>(
+        &self,
+        leaves: &'a Shared<V>,
+        branches: &'b Shared<Branch<K, V>>,
+    ) -> (Option<&'a V>, Option<&'b Branch<K, V>>) {
+        let (leaf, branch) = self.leaf_branch();
+        (
+            leaf.map(|leaf| leaf.get(leaves)),
+            branch.map(|branch| branch.get(branches)),
+        )
+    }
+    pub fn get_leaf_branch_mut<'a, 'b>(
+        &self,
+        leaves: &'a mut Shared<V>,
+        branches: &'b mut Shared<Branch<K, V>>,
+    ) -> (Option<&'a mut V>, Option<&'b mut Branch<K, V>>) {
+        let (leaf, branch) = self.leaf_branch();
+        (
+            leaf.map(|leaf| leaf.get_mut(leaves)),
+            branch.map(|branch| branch.get_mut(branches)),
+        )
     }
     pub(crate) fn node_debug<'a>(&'a self, trie: &'a Trie<K, V>) -> impl 'a + Debug
     where
@@ -209,7 +251,7 @@ impl<K: Ord, V> Node<K, V> {
         match self.handle.leak() {
             DataHandle::Empty | DataHandle::Branch(_) => None,
             DataHandle::Leaf(leaf) => {
-                self.prefix.clear();
+                //self.prefix.clear();
                 self.handle = DataHandle::Empty;
                 Some(leaf.remove(leaves))
             }

@@ -9,6 +9,7 @@ use std::{
     borrow::Borrow,
     collections::{BTreeMap, btree_map},
     fmt::Debug,
+    mem::{replace, take},
 };
 
 #[derive(Debug)]
@@ -48,8 +49,14 @@ impl<K: Ord, V> Branch<K, V> {
     pub fn get_or_insert(&mut self, shared: &mut Shared<Node<K, V>>, key: K) -> NodeHandle<K, V> {
         self.0
             .entry(key)
-            .or_insert(Handle::new(shared, Node::from(vec![], ())))
+            .or_insert_with(|| Handle::new(shared, Node::from(vec![], ())))
             .leak()
+    }
+    pub fn replace<Q: Ord>(&mut self, key: &Q, node: NodeHandle<K, V>) -> NodeHandle<K, V>
+    where
+        K: Borrow<Q>,
+    {
+        replace(self.0.get_mut(key).unwrap(), node)
     }
     pub fn get<Q: Ord>(&self, key: &Q) -> Option<NodeHandle<K, V>>
     where
@@ -57,7 +64,7 @@ impl<K: Ord, V> Branch<K, V> {
     {
         self.0.get(key).map(Handle::leak)
     }
-    pub fn prune(&mut self, nodes: &mut Shared<Node<K, V>>) -> bool {
+    pub fn cleanup(&mut self, nodes: &mut Shared<Node<K, V>>) -> usize {
         self.0.retain(|_, node| {
             if node.get(nodes).is_empty_node() {
                 node.leak().remove(nodes);
@@ -66,7 +73,17 @@ impl<K: Ord, V> Branch<K, V> {
                 true
             }
         });
-        self.is_empty()
+        self.0.len()
+    }
+    pub fn prune(
+        &mut self,
+        nodes: &mut Shared<Node<K, V>>,
+    ) -> Option<Option<(K, NodeHandle<K, V>)>> {
+        match self.cleanup(nodes) {
+            0 => Some(None),
+            1 => Some(take(&mut self.0).into_iter().last()),
+            _ => None,
+        }
     }
 
     pub fn keys(&self) -> btree_map::Keys<'_, K, NodeHandle<K, V>> {
