@@ -95,7 +95,7 @@ impl<K: Ord, V> VNode<K, V> {
                     .extend(key);
                 break vnode.skip_prefix(trie);
             }
-            vnode = vnode.try_skip_prefix(trie, &mut key);
+            vnode = vnode.try_skip_prefix(trie, &mut key, K::eq);
             let Some(key) = key.next() else {
                 break vnode;
             };
@@ -172,15 +172,16 @@ impl<K: Ord, V> VNode<K, V> {
     {
         let mut node = self.leak();
         let mut backup = None;
-        let mut key = key.into_iter();
+        let mut key = key.into_iter().peekable();
         loop {
+            node = node.try_skip_prefix(trie, &mut key, |k, q| k.borrow() == *q);
             match f(node.leak(), trie) {
                 Ok(t) => break Ok(t),
                 Err(t @ Some(_)) => backup = t,
                 Err(None) => (),
             }
-            if let Some(key) = key.next()
-                && let Some(next) = node.next(trie, key)
+            if let Some(k) = key.next()
+                && let Some(next) = node.next(trie, k)
             {
                 node = next;
             } else {
@@ -239,16 +240,17 @@ impl<K: Ord, V> VNode<K, V> {
         let prefix_len = handle.get(&trie.nodes).prefix().len();
         Self { prefix_len, handle }
     }
-    pub fn try_skip_prefix(
+    pub fn try_skip_prefix<Q: PartialEq>(
         &self,
         trie: &Trie<K, V>,
-        key: &mut Peekable<impl Iterator<Item = K>>,
+        key: &mut Peekable<impl Iterator<Item = Q>>,
+        eq: impl Fn(&K, &Q) -> bool,
     ) -> Self {
         let handle = self.handle.leak();
         let remaining_prefix = &handle.get(&trie.nodes).prefix()[self.prefix_len..];
         let mut match_len = 0;
         while let Some(k) = remaining_prefix.get(match_len)
-            && let Some(_) = key.next_if_eq(k)
+            && let Some(_) = key.next_if(|key| eq(k, key))
         {
             match_len += 1;
         }

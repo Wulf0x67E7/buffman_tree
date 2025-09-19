@@ -1,59 +1,31 @@
-use buffman_tree::{Trie, util::time};
+use buffman_tree::{Trie, testing::BTrie, util::time};
 use quickcheck::{Arbitrary, Gen};
 use rand::{RngCore, SeedableRng, seq::SliceRandom};
 use rand_xoshiro::Xoshiro256PlusPlus;
-use std::{
-    borrow::Borrow,
-    collections::{BTreeMap, HashMap},
-    hash::Hash,
-    hint::black_box,
-    ops::Bound,
-    time::Duration,
-};
+use std::{borrow::Borrow, collections::BTreeMap, hint::black_box, time::Duration};
 
-trait MapExt<K, Q: ?Sized, V> {
-    fn get_longest_prefix(&self, key: &Q) -> Option<(&K, &V)>;
+trait MapExt<Q: ?Sized, V> {
+    fn get_longest_prefix(&self, key: &Q) -> Option<&V>;
 }
-impl<K: IntoIterator<Item: Ord>, Q: IntoIterator<Item: Ord>, V> MapExt<K, Q, V>
-    for Trie<K::Item, (K, V)>
+impl<K: Ord, Q: IntoIterator<Item: Ord>, V> MapExt<Q, V> for Trie<K, V>
 where
     for<'a> &'a Q: IntoIterator<Item = &'a Q::Item>,
-    K::Item: Borrow<Q::Item>,
+    K: Borrow<Q::Item>,
 {
-    fn get_longest_prefix(&self, key: &Q) -> Option<(&K, &V)> {
-        self.get_deepest(key).map(|(k, v)| (k, v))
+    fn get_longest_prefix(&self, key: &Q) -> Option<&V> {
+        self.get_deepest(key)
     }
 }
-impl<K: Ord + Borrow<[Q]>, Q: PartialEq + Ord, V> MapExt<K, [Q], V> for BTreeMap<K, V> {
-    fn get_longest_prefix(&self, mut key: &[Q]) -> Option<(&K, &V)> {
-        loop {
-            let (k, v) = self
-                .range((Bound::Unbounded, Bound::Included(key)))
-                .last()?;
-            if k.borrow() == key {
-                break Some((k, v));
-            }
-            key = &key[..k
-                .borrow()
-                .iter()
-                .zip(key)
-                .take_while(|(a, b)| a == b)
-                .count()];
-        }
-    }
-}
-impl<K: Eq + Hash + Borrow<[Q]>, Q: Eq + Hash, V> MapExt<K, [Q], V> for HashMap<K, V> {
-    fn get_longest_prefix(&self, mut key: &[Q]) -> Option<(&K, &V)> {
-        loop {
-            if let Some(kv) = self.get_key_value(key) {
-                return Some(kv);
-            }
-            key = key.split_last()?.1;
-        }
+impl<K: Ord + Borrow<[Q]>, Q: PartialEq + Ord, V> MapExt<[Q], V> for BTreeMap<K, V>
+where
+    Self: BTrie<K, V>,
+{
+    fn get_longest_prefix(&self, key: &[Q]) -> Option<&V> {
+        self.get_deepest(key)
     }
 }
 
-fn bench<'a, T: FromIterator<(K, V)> + MapExt<K, Q, V>, K, Q: 'a + ?Sized, V: Clone>(
+fn bench<'a, T: FromIterator<(K, V)> + MapExt<Q, V>, K, Q: 'a + ?Sized, V: Clone>(
     entries: impl IntoIterator<Item = (K, V)>,
     searches: impl IntoIterator<Item = &'a Q>,
     reduce: impl FnMut(V, V) -> V,
@@ -62,7 +34,7 @@ fn bench<'a, T: FromIterator<(K, V)> + MapExt<K, Q, V>, K, Q: 'a + ?Sized, V: Cl
     let (run, ret) = time(|| {
         searches
             .into_iter()
-            .flat_map(|key| map.get_longest_prefix(key).map(|(_, v)| v.clone()))
+            .flat_map(|key| map.get_longest_prefix(key).cloned())
             .reduce(reduce)
     });
     (init, run, ret)
@@ -73,7 +45,7 @@ fn performance() {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0);
     let mut g = Gen::new(256);
     let mut generate = || {
-        Vec::<(Box<[char]>, usize)>::from_iter((0..1 << 14).map(|x| {
+        Vec::<(Box<[char]>, usize)>::from_iter((0..1 << 16).map(|x| {
             (
                 (0..rng.next_u32() % 512)
                     .map(|_| char::arbitrary(&mut g))
@@ -97,11 +69,7 @@ fn performance() {
         searches.iter().map(|k| &**k),
         usize::wrapping_add,
     );
-    let trie = bench::<Trie<char, (Box<[char]>, usize)>, _, _, _>(
-        entries.clone(),
-        &searches,
-        usize::wrapping_add,
-    );
+    let trie = bench::<Trie<char, usize>, _, _, _>(entries.clone(), &searches, usize::wrapping_add);
 
     println!("btree:    {btree:?}");
     println!("trie2:    {trie:?}");
