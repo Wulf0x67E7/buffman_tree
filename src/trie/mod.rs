@@ -10,8 +10,6 @@ use crate::{
 pub(self) mod branch;
 pub(self) mod handle;
 pub(self) mod node;
-#[cfg(test)]
-pub(crate) mod testing;
 pub(self) mod vnode;
 use std::{borrow::Borrow, convert::identity, fmt::Debug};
 
@@ -228,7 +226,7 @@ impl<K: Ord, V> Trie<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::BTrie;
+    use crate::testing::BTrie;
     use quickcheck_macros::quickcheck;
     use std::collections::BTreeMap;
 

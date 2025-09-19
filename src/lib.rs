@@ -1,5 +1,6 @@
 mod trie;
 pub use trie::*;
+pub mod testing;
 #[cfg(test)]
 mod tests {
     #[allow(unused_imports)]
@@ -14,10 +15,7 @@ mod tests {
 #[macro_use]
 pub mod util {
     use std::{
-        borrow::Borrow,
-        collections::BTreeMap,
         marker::PhantomData,
-        ops::{Bound, Index, RangeTo},
         time::{Duration, Instant},
     };
 
@@ -31,79 +29,6 @@ pub mod util {
             }
         }
         DebugFn(f)
-    }
-
-    pub trait BTrie<K, V> {
-        fn get_deepest<
-            I: ?Sized + Ord + Index<RangeTo<usize>, Output = I> + Index<usize, Output: PartialEq>,
-        >(
-            &self,
-            key: &I,
-        ) -> Option<&V>
-        where
-            K: Borrow<I>,
-            for<'a> &'a I: IntoIterator<Item = &'a <I as Index<usize>>::Output>;
-        fn get_deepest_mut<
-            I: ?Sized + Ord + Index<RangeTo<usize>, Output = I> + Index<usize, Output: PartialEq>,
-        >(
-            &mut self,
-            key: &I,
-        ) -> Option<&mut V>
-        where
-            K: Borrow<I>,
-            for<'a> &'a I: IntoIterator<Item = &'a <I as Index<usize>>::Output>;
-    }
-    impl<K: Ord, V> BTrie<K, V> for BTreeMap<K, V> {
-        fn get_deepest<
-            I: ?Sized + Ord + Index<RangeTo<usize>, Output = I> + Index<usize, Output: PartialEq>,
-        >(
-            &self,
-            mut key: &I,
-        ) -> Option<&V>
-        where
-            K: Borrow<I>,
-            for<'a> &'a I: IntoIterator<Item = &'a <I as Index<usize>>::Output>,
-        {
-            loop {
-                let (k, v) = self
-                    .range((Bound::Unbounded, Bound::Included(key)))
-                    .last()?;
-                if k.borrow() == key {
-                    break Some(v);
-                }
-                key = &key[..k
-                    .borrow()
-                    .into_iter()
-                    .zip(key)
-                    .take_while(|(a, b)| a == b)
-                    .count()];
-            }
-        }
-        fn get_deepest_mut<
-            I: ?Sized + Ord + Index<RangeTo<usize>, Output = I> + Index<usize, Output: PartialEq>,
-        >(
-            &mut self,
-            mut key: &I,
-        ) -> Option<&mut V>
-        where
-            K: Borrow<I>,
-            for<'a> &'a I: IntoIterator<Item = &'a <I as Index<usize>>::Output>,
-        {
-            loop {
-                let (k, _) = self
-                    .range((Bound::Unbounded, Bound::Included(key)))
-                    .last()?;
-                if k.borrow() == key {
-                    break Some(self.get_mut(key).unwrap());
-                }
-                key = &key[..k
-                    .borrow()
-                    .into_iter()
-                    .zip(key)
-                    .take_while(|(a, b)| a == b)
-                    .count()];
-            }
-        }
     }
 
     pub fn unzipped<A, B, R, F: FnMut(A, B) -> R>(mut f: F) -> impl FnMut((A, B)) -> R {

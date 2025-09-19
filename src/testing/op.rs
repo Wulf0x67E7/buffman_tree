@@ -1,19 +1,10 @@
-#![cfg(test)]
-
+use crate::{testing::BTrie, trie::Trie, util::debug_fn};
+use quickcheck::{Arbitrary, Gen, TestResult, empty_shrinker, single_shrinker};
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fmt::Debug,
     ops::{Index, RangeTo},
-};
-
-use quickcheck::{Arbitrary, Gen, TestResult, empty_shrinker, single_shrinker};
-use quickcheck_macros::quickcheck;
-use slab::Slab;
-
-use crate::{
-    trie::Trie,
-    util::{BTrie, debug_fn},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +57,9 @@ impl<T: Arbitrary> Arbitrary for Action<T> {
     }
 }
 impl<T> Action<T> {
+    pub fn item(&self) -> &T {
+        &self.item
+    }
     pub fn map_item<U>(self, f: impl FnOnce(T) -> U) -> Action<U> {
         Action {
             op: self.op,
@@ -89,13 +83,13 @@ pub struct Procedure<T> {
 impl<T: Debug> Debug for Procedure<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Procedure")
-            .field(&debug_fn(|f: &mut std::fmt::Formatter<'_>| {
+            .field(&debug_fn(|f| {
                 f.debug_list()
                     .entries(self.actions.iter().map(|action| {
-                        debug_fn(|f: &mut std::fmt::Formatter<'_>| {
+                        debug_fn(|f| {
                             f.debug_struct("Action")
                                 .field("op", &action.op)
-                                .field("item", &self.items.get(action.item))
+                                .field("item", &self.items[action.item])
                                 .finish()
                         })
                     }))
@@ -116,8 +110,11 @@ impl<T: Arbitrary> Procedure<T> {
     fn gen_action(&mut self, g: &mut Gen) -> Action<usize> {
         let op = Op::arbitrary(g);
         let end = self.items.len();
-        let item = {
-            let index = usize::arbitrary(g) % (2 * end);
+        let item = if end == 0 {
+            self.items.push(T::arbitrary(g));
+            end
+        } else {
+            let index: usize = usize::arbitrary(g) % (2 * end);
             if let Op::Insert = op
                 && index >= end
             {
@@ -155,6 +152,45 @@ impl<T: Arbitrary> Procedure<T> {
             items: packed_items,
         }
     }
+    fn shrink_actions(&self) -> impl use<T> + Iterator<Item = Self> {
+        let Self { actions, items } = self.clone();
+        actions.shrink().map({
+            move |actions| {
+                Self {
+                    actions,
+                    items: items.clone(),
+                }
+                .pack_items()
+            }
+        })
+    }
+    fn shrink_items(&self) -> impl use<T> + Iterator<Item = Self> {
+        let Self { actions, items } = self.clone();
+        let mut idx = 0;
+        let mut es = if let Some(es) = items.get(idx) {
+            es.shrink()
+        } else {
+            empty_shrinker()
+        };
+        std::iter::from_fn(move || {
+            loop {
+                match es.next() {
+                    Some(e) => {
+                        let mut items = items.clone();
+                        items[idx] = e;
+                        break Some(Self {
+                            actions: actions.clone(),
+                            items,
+                        });
+                    }
+                    None => {
+                        idx += 1;
+                        es = items.get(idx)?.shrink();
+                    }
+                }
+            }
+        })
+    }
     pub fn run<O, S>(&self) -> TestResult
     where
         O: 'static + Default + Consumer<T>,
@@ -173,6 +209,14 @@ impl<T: Arbitrary> Procedure<T> {
         }
         TestResult::passed()
     }
+    pub fn len(&self) -> usize {
+        self.actions.len()
+    }
+    pub fn actions(&self) -> impl Iterator<Item = Action<&T>> {
+        self.actions
+            .iter()
+            .map(|action| action.map_item(|item| &self.items[item]))
+    }
 }
 impl<T: Arbitrary> Arbitrary for Procedure<T> {
     fn arbitrary(g: &mut Gen) -> Self {
@@ -185,14 +229,7 @@ impl<T: Arbitrary> Arbitrary for Procedure<T> {
         this
     }
     fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
-        let Self { actions, items } = self.clone();
-        Box::new(actions.shrink().map(move |actions| {
-            Self {
-                actions,
-                items: items.clone(),
-            }
-            .pack_items()
-        }))
+        Box::new(Iterator::chain(self.shrink_actions(), self.shrink_items()))
     }
 }
 
@@ -226,13 +263,15 @@ where
     }
 }
 
-impl<
-    K: Ord + Index<RangeTo<usize>, Output = K> + Index<usize, Output: PartialEq>,
-    V: Debug + Clone + PartialEq,
-> Consumer<(K, V)> for BTreeMap<K, V>
+impl<K: Ord + Index<usize, Output: PartialEq> + Index<RangeTo<usize>>, V: Debug + Clone + PartialEq>
+    Consumer<(K, V)> for BTreeMap<K, V>
 where
-    Self: BTrie<K, V>,
-    for<'a> &'a K: IntoIterator<Item = &'a <K as Index<usize>>::Output>,
+    K: Borrow<<K as Index<RangeTo<usize>>>::Output>,
+    <K as Index<RangeTo<usize>>>::Output: Ord
+        + Index<usize, Output = <K as Index<usize>>::Output>
+        + Index<RangeTo<usize>, Output = <K as Index<RangeTo<usize>>>::Output>,
+    for<'a> &'a <K as Index<RangeTo<usize>>>::Output:
+        IntoIterator<Item = &'a <K as Index<usize>>::Output>,
 {
     type U<'a>
         = Option<V>
@@ -246,9 +285,9 @@ where
         } = action;
         match op {
             Op::Insert => self.insert(key, value),
-            Op::Get => self.get(&key).cloned(),
-            Op::GetDeepest => self.get_deepest(&key).cloned(),
-            Op::Remove => self.remove(&key),
+            Op::Get => self.get(key.borrow()).cloned(),
+            Op::GetDeepest => self.get_deepest(key.borrow()).cloned(),
+            Op::Remove => self.remove(key.borrow()),
         }
     }
 }
