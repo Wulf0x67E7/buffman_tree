@@ -9,6 +9,23 @@
 			],
 			"group": "build",
 			"label": "rust: cargo test"
+		},
+		{
+			"type": "cargo",
+			"command": "flamegraph",
+			"args": [
+				"--test",
+				"performance",
+				"--",
+				"performance",
+				"--exact",
+				"--show-output"
+			],
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "rust: cargo flamegraph --test"
 		}
 	]
 }

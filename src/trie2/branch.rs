@@ -5,7 +5,11 @@ use crate::{
         node::{Node, NodeHandle},
     },
 };
-use std::{borrow::Borrow, collections::BTreeMap, fmt::Debug};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, btree_map},
+    fmt::Debug,
+};
 
 #[derive(Debug)]
 pub struct Branch<K, V>(BTreeMap<K, NodeHandle<K, V>>);
@@ -63,6 +67,13 @@ impl<K: Ord, V> Branch<K, V> {
             }
         });
         self.is_empty()
+    }
+
+    pub fn keys(&self) -> btree_map::Keys<'_, K, NodeHandle<K, V>> {
+        self.0.keys()
+    }
+    pub fn values(&self) -> btree_map::Values<'_, K, NodeHandle<K, V>> {
+        self.0.values()
     }
 }
 pub type BranchHandle<K, V> = Handle<Branch<K, V>>;

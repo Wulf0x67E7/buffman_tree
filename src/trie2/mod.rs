@@ -41,10 +41,53 @@ impl<K, V> Default for Trie<K, V> {
         }
     }
 }
-
+impl<K, V> Trie<K, V> {
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut nodes = Shared::with_capacity(capacity);
+        Self {
+            root: Handle::new_default(&mut nodes),
+            nodes,
+            branches: Shared::with_capacity(capacity),
+            leaves: Shared::with_capacity(capacity),
+        }
+    }
+}
+impl<K: IntoIterator<Item: Ord>, V> FromIterator<(K, V)> for Trie<K::Item, V> {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let capacity = {
+            let hint = iter.size_hint();
+            hint.1.unwrap_or(hint.0)
+        };
+        let mut this = Self::with_capacity(capacity);
+        for (k, v) in iter {
+            this.insert(k, v);
+        }
+        this
+    }
+}
+impl<K: Clone + IntoIterator<Item: Ord>, V> FromIterator<(K, V)> for Trie<K::Item, (K, V)> {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let capacity = {
+            let hint = iter.size_hint();
+            hint.1.unwrap_or(hint.0)
+        };
+        let mut this = Self::with_capacity(capacity);
+        for (k, v) in iter {
+            this.insert(k.clone(), (k, v));
+        }
+        this
+    }
+}
+impl<K: Ord, V: PartialEq> PartialEq for Trie<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
 impl<K: PartialEq + Ord, V> Trie<K, V> {
     pub fn is_empty(&self) -> bool {
-        let empty_shallow = self.root.get(&self.nodes).is_empty(&self.branches);
+        let empty_shallow = self.root.get(&self.nodes).is_empty_node();
         debug_assert_eq!(
             empty_shallow,
             self.branches.is_empty() && self.leaves.is_empty() && self.nodes.len() == 1
@@ -53,8 +96,8 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     }
     pub fn insert(&mut self, key: impl IntoIterator<Item = K>, value: V) -> Option<V> {
         VNode::start(self.root.leak())
-            .make_descend(self, key, |_, _| ())
-            .make_leaf(&mut self.nodes, &mut self.branches, &mut self.leaves, value)
+            .make_descend(self, key)
+            .make_leaf(self, value)
     }
     pub fn get<'a, Q: 'a + PartialEq + Ord>(
         &self,
@@ -93,11 +136,11 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     where
         K: Borrow<Q>,
     {
-        match VNode::start(self.root.leak()).find(self, key, |node, this| {
-            Err(node.leaf(&this.nodes, &this.leaves).map(|_| node))
-        }) {
-            Ok(node) => Ok(node.leaf_mut(&self.nodes, &mut self.leaves).unwrap()),
-            Err(node) => Err(node.leaf_mut(&self.nodes, &mut self.leaves)),
+        match VNode::start(self.root.leak())
+            .find(self, key, |node, this| Err(node.leaf(this).map(|_| node)))
+        {
+            Ok(node) => Ok(node.leaf_mut(self).unwrap()),
+            Err(node) => Err(node.leaf_mut(self)),
         }
     }
     pub fn get_deepest<'a, Q: 'a + PartialEq + Ord>(
@@ -130,10 +173,22 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
                 self,
                 key,
                 |node, this| Some(node.as_node(&this.nodes).is_some()),
-                |node, this| node.take_leaf(&mut this.nodes, &mut this.leaves),
-                |node, this| node.prune_branch(&mut this.nodes, &mut this.branches),
+                |node, this| node.take_leaf(this),
+                |node, this| node.prune_branch(this),
             )
             .ok()
+    }
+    pub fn into_iter(self) -> impl Iterator<Item = V>
+    where
+        (K, V): 'static,
+    {
+        VNode::start(self.root.leak()).into_iter(self)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &V> {
+        VNode::start(self.root.leak()).iter(self)
+    }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        VNode::start(self.root.leak()).iter_mut(self)
     }
 }
 
@@ -148,7 +203,7 @@ impl<K: Ord, V> Trie<K, V> {
         VNode::start(self.root.leak())
             .descend(self, key, |_, _| true)
             .ok()?
-            .leaf_handle(&self.nodes)
+            .leaf_handle(self)
     }
     fn try_get_handle<'a, Q: 'a + PartialEq + Ord>(
         &self,
@@ -158,8 +213,8 @@ impl<K: Ord, V> Trie<K, V> {
         K: Borrow<Q>,
     {
         VNode::start(self.root.leak())
-            .find(self, key, |node, this| Err(node.leaf_handle(&this.nodes)))
-            .map_err(|node| node.leaf_handle(&self.nodes))
+            .find(self, key, |node, this| Err(node.leaf_handle(this)))
+            .map_err(|node| node.leaf_handle(self))
     }
 }
 
@@ -176,7 +231,7 @@ mod tests {
     }
     #[test]
     fn insert_get_case() {
-        let values = BTreeMap::from_iter([(vec![0], "0".into())]);
+        let values = BTreeMap::from_iter([(vec![0, 0], "00".into()), (vec![1], "1".into())]);
         let searches = vec![vec![]];
         insert_get(values, searches);
     }
@@ -199,18 +254,15 @@ mod tests {
                 "failed get deepest {search:?}\n{trie:?}"
             );
         }
+        for (a, b) in btree.values().zip(trie.iter()) {
+            assert_eq!(a, b, "failed iter {a:?} != {b:?}\n{trie:?}");
+        }
         for key in &searches {
             assert_eq!(btree.remove(key), trie.remove(key), "failed remove {key:?}");
+            assert_eq!(btree.is_empty(), trie.is_empty());
         }
-        for search in &searches {
-            assert_eq!(btree.get(search), trie.get(search), "failed get {search:?}");
-            assert_eq!(
-                btree.get_deepest(&**search),
-                trie.get_deepest(search),
-                "failed get deepest {search:?}\n{trie:?}"
-            );
-        }
+
         assert!(trie.is_empty(), "failed is empty\n{trie:?}");
-        //assert_eq!(trie, Trie::default());
+        assert_eq!(trie, Trie::default());
     }
 }

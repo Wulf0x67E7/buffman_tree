@@ -22,6 +22,16 @@ where
         self.get_deepest_leaf(key).map(Leaf::unwrap)
     }
 }
+impl<K: IntoIterator<Item: Ord>, Q: IntoIterator<Item: Ord>, V> MapExt<K, Q, V>
+    for buffman_tree::trie2::Trie<K::Item, (K, V)>
+where
+    for<'a> &'a Q: IntoIterator<Item = &'a Q::Item>,
+    K::Item: Borrow<Q::Item>,
+{
+    fn get_longest_prefix(&self, key: &Q) -> Option<(&K, &V)> {
+        self.get_deepest(key).map(|(k, v)| (k, v))
+    }
+}
 impl<K: Ord + Borrow<[Q]>, Q: PartialEq + Ord, V> MapExt<K, [Q], V> for BTreeMap<K, V> {
     fn get_longest_prefix(&self, mut key: &[Q]) -> Option<(&K, &V)> {
         loop {
@@ -95,18 +105,18 @@ fn performance() {
         searches.iter().map(|k| &**k),
         usize::wrapping_add,
     );
-    //let hash = time(|| {
-    //    bench::<HashMap<Box<[char]>, usize>, _, _, _>(
-    //        entries.clone(),
-    //        searches.iter().map(|k| &**k),
-    //        usize::wrapping_add,
-    //    )
-    //});
     let trie =
         bench::<Trie<Box<[char]>, usize>, _, _, _>(entries.clone(), &searches, usize::wrapping_add);
+    let trie2 = bench::<buffman_tree::trie2::Trie<char, (Box<[char]>, usize)>, _, _, _>(
+        entries.clone(),
+        &searches,
+        usize::wrapping_add,
+    );
 
     println!("btree:    {btree:?}");
-    //println!("hash:     {}mys sum {:?}", hash.0.as_micros(), hash.1);
     println!("trie:     {trie:?}");
+    println!("trie2:    {trie2:?}");
+
     assert_eq!(btree.2, trie.2);
+    assert_eq!(btree.2, trie2.2);
 }
