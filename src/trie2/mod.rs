@@ -178,7 +178,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
                 key,
                 |node, this, _| Some(node.as_node(&this.nodes).is_some()),
                 |node, this| {
-                    let ret = node.take_leaf(this)?;
+                    let (node, ret) = node.take_leaf(this)?;
                     node.prune_branch(this);
                     Some(ret)
                 },

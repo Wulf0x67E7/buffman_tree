@@ -229,6 +229,11 @@ impl<K: Ord, V> VNode<K, V> {
         }
         Ok(ret)
     }
+    pub fn snap_prefix(&self, trie: &Trie<K, V>) -> Self {
+        let handle = self.handle.leak();
+        let prefix_len = self.prefix_len.min(handle.get(&trie.nodes).prefix().len());
+        Self { prefix_len, handle }
+    }
     pub fn skip_prefix(&self, trie: &Trie<K, V>) -> Self {
         let handle = self.handle.leak();
         let prefix_len = handle.get(&trie.nodes).prefix().len();
@@ -263,7 +268,7 @@ impl<K: Ord, V> VNode<K, V> {
                         handle: node.leak(),
                     }));
                 }
-                if let Some(leaf) = node.take_leaf(&mut trie) {
+                if let Some((_, leaf)) = node.take_leaf(&mut trie) {
                     break Some(leaf);
                 }
             }
@@ -373,9 +378,11 @@ impl<K: Ord, V> VNode<K, V> {
     pub fn leaf_mut<'a>(&self, trie: &'a mut Trie<K, V>) -> Option<&'a mut V> {
         Some(self.leaf_handle(trie)?.get_mut(&mut trie.leaves))
     }
-    pub fn take_leaf(&self, trie: &mut Trie<K, V>) -> Option<V> {
-        self.as_node_mut(&mut trie.nodes)?
-            .take_leaf(&mut trie.leaves)
+    pub fn take_leaf(&self, trie: &mut Trie<K, V>) -> Option<(Self, V)> {
+        let ret = self
+            .as_node_mut(&mut trie.nodes)?
+            .take_leaf(&mut trie.leaves)?;
+        Some((self.snap_prefix(trie), ret))
     }
     pub fn make_branch(&self, trie: &mut Trie<K, V>) -> BranchHandle<K, V> {
         let node = self.handle.get_mut(&mut trie.nodes);

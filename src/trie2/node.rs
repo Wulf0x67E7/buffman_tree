@@ -251,8 +251,8 @@ impl<K: Ord, V> Node<K, V> {
         match self.handle.leak() {
             DataHandle::Empty | DataHandle::Branch(_) => None,
             DataHandle::Leaf(leaf) => {
-                //self.prefix.clear();
                 self.handle = DataHandle::Empty;
+                self.prefix.clear();
                 Some(leaf.remove(leaves))
             }
             DataHandle::Full { leaf, branch } => {
