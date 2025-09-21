@@ -5,7 +5,7 @@ use crate::{
         node::{Node, NodeHandle},
         vnode::VNode,
     },
-    util::OptExt as _,
+    util::opt_res_ext::OptExt as _,
 };
 pub(self) mod branch;
 pub(self) mod handle;
@@ -96,6 +96,9 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
         );
         empty_shallow
     }
+    pub fn len(&self) -> usize {
+        self.leaves.len()
+    }
     pub fn insert(&mut self, key: impl IntoIterator<Item = K>, value: V) -> Option<V> {
         VNode::start(self.root.leak())
             .make_descend(self, key)
@@ -173,15 +176,21 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
             .dive(
                 self,
                 key,
-                |node, this, _| Some(node.as_node(&this.nodes).is_some()),
+                |_, _, _| true,
                 |node, this| {
                     let (node, ret) = node.take_leaf(this)?;
                     node.prune_branch(this);
                     Some(ret)
                 },
-                |node, this, _| node.prune_branch(this).is_some(),
+                |node, this, _| node.prune_branch(this),
             )
             .ok()
+    }
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.branches.clear();
+        self.leaves.clear();
+        self.root = Handle::new_default(&mut self.nodes);
     }
     pub fn into_iter(self) -> impl Iterator<Item = V>
     where
@@ -226,56 +235,28 @@ impl<K: Ord, V> Trie<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::BTrie;
-    use quickcheck_macros::quickcheck;
-    use std::collections::BTreeMap;
 
-    #[quickcheck]
-    fn insert_get_remove_fuzz(values: BTreeMap<Vec<u8>, String>, searches: Vec<Vec<u8>>) {
-        insert_get(values, searches);
-    }
     #[test]
-    fn insert_get_case() {
-        let values = BTreeMap::from_iter([
-            (vec![], "_".into()),
-            (vec![1], "1".into()),
-            (vec![1, 0], "10".into()),
-        ]);
-        let searches = vec![vec![]];
-        insert_get(values, searches);
-    }
-    fn insert_get(values: BTreeMap<Vec<u8>, String>, mut searches: Vec<Vec<u8>>) {
-        let mut btree = BTreeMap::default();
-        let mut trie = Trie::default();
-        searches.extend(values.keys().cloned());
-        for (key, value) in values {
-            assert_eq!(
-                btree.insert(key.clone(), value.clone()),
-                trie.insert(key.clone(), value.clone()),
-                "failed insert {key:?}: {value}"
-            );
-        }
-        for search in &searches {
-            assert_eq!(btree.get(search), trie.get(search), "failed get {search:?}");
-            assert_eq!(
-                btree.get_deepest(&**search),
-                trie.get_deepest(search),
-                "failed get deepest {search:?}\n{trie:?}"
-            );
-        }
-        for (a, b) in btree.values().zip(trie.iter()) {
-            assert_eq!(a, b, "failed iter {a:?} != {b:?}\n{trie:?}");
-        }
-        for key in &searches {
-            assert_eq!(btree.remove(key), trie.remove(key), "failed remove {key:?}");
-            assert_eq!(
-                btree.is_empty(),
-                trie.is_empty(),
-                "failed is empty\n{trie:?}"
-            );
-        }
+    fn prune_contract() {
+        let mut trie: Trie<usize, &'static str> =
+            Trie::from_iter([(vec![], "_"), (vec![1], "1"), (vec![1, 0], "10")]);
 
-        assert!(trie.is_empty(), "failed is empty\n{trie:?}");
-        assert_eq!(trie, Trie::default());
+        assert_eq!(trie.remove([]), Some("_"));
+        let node = trie.root.get(&trie.nodes);
+        assert_eq!(node.prefix(), &[1]);
+        assert!(matches!(node.leaf_branch(), (Some(_), Some(_))));
+        assert!(!trie.is_empty());
+
+        assert_eq!(trie.remove(&[1]), Some("1"));
+        let node = trie.root.get(&trie.nodes);
+        assert_eq!(node.prefix(), &[1, 0]);
+        assert!(matches!(node.leaf_branch(), (Some(_), None)));
+        assert!(!trie.is_empty());
+
+        assert_eq!(trie.remove(&[1, 0]), Some("10"));
+        let node = trie.root.get(&trie.nodes);
+        assert_eq!(node.prefix(), &[]);
+        assert!(node.is_empty());
+        assert!(trie.is_empty());
     }
 }

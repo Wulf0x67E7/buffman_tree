@@ -1,80 +1,10 @@
-use crate::{testing::BTrie, trie::Trie, util::debug_fn};
-use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult, empty_shrinker, single_shrinker};
-use std::{
-    borrow::Borrow,
-    collections::BTreeMap,
-    fmt::Debug,
-    ops::{Index, RangeTo},
+use crate::{
+    testing::{Action, Consumer, Op},
+    util::debug_fn,
 };
+use quickcheck::{Arbitrary, Gen, TestResult, empty_shrinker};
+use std::{collections::BTreeMap, fmt::Debug};
 
-#[derive(Debug, Clone, Copy)]
-pub enum Op {
-    Insert,
-    Get,
-    GetDeepest,
-    Remove,
-}
-impl Op {
-    const WEIGHTED: &[Self] = [
-        [Self::Insert; 1],
-        [Self::Get; 1],
-        [Self::GetDeepest; 1],
-        [Self::Remove; 1],
-    ]
-    .as_flattened();
-}
-impl Arbitrary for Op {
-    fn arbitrary(g: &mut Gen) -> Self {
-        g.choose(Self::WEIGHTED).copied().unwrap()
-    }
-    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
-        match self {
-            Op::Insert => single_shrinker(Op::GetDeepest),
-            Op::Get => empty_shrinker(),
-            Op::GetDeepest => single_shrinker(Op::Get),
-            Op::Remove => single_shrinker(Op::GetDeepest),
-        }
-    }
-}
-#[derive(Debug, Clone, Copy)]
-pub struct Action<T> {
-    op: Op,
-    item: T,
-}
-impl<T: Arbitrary> Arbitrary for Action<T> {
-    fn arbitrary(g: &mut Gen) -> Self {
-        Self {
-            op: Op::arbitrary(g),
-            item: T::arbitrary(g),
-        }
-    }
-    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
-        let item = self.item.clone();
-        Box::new(self.op.shrink().map(move |op| Action {
-            op,
-            item: item.clone(),
-        }))
-    }
-}
-impl<T> Action<T> {
-    pub fn item(&self) -> &T {
-        &self.item
-    }
-    pub fn map_item<U>(self, f: impl FnOnce(T) -> U) -> Action<U> {
-        Action {
-            op: self.op,
-            item: f(self.item),
-        }
-    }
-}
-impl<T: Clone> Action<&T> {
-    pub fn cloned(self) -> Action<T> {
-        Action {
-            op: self.op,
-            item: self.item.clone(),
-        }
-    }
-}
 #[derive(Clone)]
 pub struct Procedure<T> {
     actions: Vec<Action<usize>>,
@@ -88,7 +18,7 @@ impl<T: Debug> Debug for Procedure<T> {
                     .entries(self.actions.iter().map(|action| {
                         debug_fn(|f| {
                             f.debug_struct("Action")
-                                .field("op", &action.op)
+                                .field("op", action.op())
                                 .field("item", &self.items[action.item])
                                 .finish()
                         })
@@ -193,8 +123,9 @@ impl<T: Arbitrary> Procedure<T> {
     }
     pub fn run<O, S>(&self) -> TestResult
     where
-        O: 'static + Default + Consumer<T>,
-        for<'a> S: 'static + Default + Consumer<T, U<'a> = O::U<'a>>,
+        O: Default + Consumer<T>,
+        S: Default + Consumer<T>,
+        for<'a> O::U<'a>: PartialEq<S::U<'a>>,
     {
         let mut oracle = O::default();
         let mut student = S::default();
@@ -203,8 +134,12 @@ impl<T: Arbitrary> Procedure<T> {
             .iter()
             .map(|action| action.map_item(|index| &self.items[index]))
         {
-            if oracle.consume(action.cloned()) != student.consume(action.cloned()) {
-                return TestResult::failed();
+            let (oracle, student) = (
+                oracle.consume(action.cloned()),
+                student.consume(action.cloned()),
+            );
+            if oracle != student {
+                return TestResult::error(format!("oracle != student : {oracle:?} != {student:?}"));
             }
         }
         TestResult::passed()
@@ -233,65 +168,6 @@ impl<T: Arbitrary> Arbitrary for Procedure<T> {
     }
 }
 
-pub trait Consumer<T> {
-    type U<'a>: 'a + Debug + PartialEq
-    where
-        Self: 'a;
-    fn consume(&mut self, action: Action<T>) -> Self::U<'_>;
-}
-
-impl<K: IntoIterator<Item: Ord>, V: Debug + Clone + PartialEq> Consumer<(K, V)> for Trie<K::Item, V>
-where
-    for<'a> &'a K: IntoIterator<Item = &'a K::Item>,
-{
-    type U<'a>
-        = Option<V>
-    where
-        Self: 'a;
-
-    fn consume(&mut self, action: Action<(K, V)>) -> Self::U<'_> {
-        let Action {
-            op,
-            item: (key, value),
-        } = action;
-        match op {
-            Op::Insert => self.insert(key, value),
-            Op::Get => self.get(&key).cloned(),
-            Op::GetDeepest => self.get_deepest(&key).cloned(),
-            Op::Remove => self.remove(&key),
-        }
-    }
-}
-
-impl<K: Ord + Index<usize, Output: PartialEq> + Index<RangeTo<usize>>, V: Debug + Clone + PartialEq>
-    Consumer<(K, V)> for BTreeMap<K, V>
-where
-    K: Borrow<<K as Index<RangeTo<usize>>>::Output>,
-    <K as Index<RangeTo<usize>>>::Output: Ord
-        + Index<usize, Output = <K as Index<usize>>::Output>
-        + Index<RangeTo<usize>, Output = <K as Index<RangeTo<usize>>>::Output>,
-    for<'a> &'a <K as Index<RangeTo<usize>>>::Output:
-        IntoIterator<Item = &'a <K as Index<usize>>::Output>,
-{
-    type U<'a>
-        = Option<V>
-    where
-        Self: 'a;
-
-    fn consume(&mut self, action: Action<(K, V)>) -> Self::U<'_> {
-        let Action {
-            op,
-            item: (key, value),
-        } = action;
-        match op {
-            Op::Insert => self.insert(key, value),
-            Op::Get => self.get(key.borrow()).cloned(),
-            Op::GetDeepest => self.get_deepest(key.borrow()).cloned(),
-            Op::Remove => self.remove(key.borrow()),
-        }
-    }
-}
-
 #[test]
 fn procedure_shrinking() {
     fn test(proc: Procedure<(Vec<u8>, usize)>) -> TestResult {
@@ -301,9 +177,9 @@ fn procedure_shrinking() {
             TestResult::passed()
         }
     }
-    let ret = QuickCheck::new()
+    let ret = quickcheck::QuickCheck::new()
         .quicktest(test as fn(Procedure<(Vec<u8>, usize)>) -> TestResult)
         .unwrap_err();
-    let proc = "TestResult { status: Fail, arguments: [\"Procedure([Action { op: Get, item: ([0, 0, 0, 0], 0) }])\"], err: None }";
+    let proc = "TestResult { status: Fail, arguments: [\"Procedure([Action { op: Empty, item: ([0, 0, 0, 0], 0) }])\"], err: None }";
     assert_eq!(format!("{ret:?}"), format!("{proc}"));
 }

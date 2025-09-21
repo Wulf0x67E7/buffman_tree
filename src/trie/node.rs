@@ -134,16 +134,16 @@ impl<K, V> Node<K, V> {
     pub fn leaf(&self) -> Option<LeafHandle<V>> {
         self.handle.leaf()
     }
-    pub fn get_leaf<'a>(&self, leaves: &'a Shared<V>) -> Option<&'a V> {
+    pub fn _get_leaf<'a>(&self, leaves: &'a Shared<V>) -> Option<&'a V> {
         Some(self.handle.leaf()?.get(leaves))
     }
-    pub fn get_leaf_mut<'a>(&self, leaves: &'a mut Shared<V>) -> Option<&'a mut V> {
+    pub fn _get_leaf_mut<'a>(&self, leaves: &'a mut Shared<V>) -> Option<&'a mut V> {
         Some(self.handle.leaf()?.get_mut(leaves))
     }
     pub fn leaf_branch(&self) -> (Option<LeafHandle<V>>, Option<BranchHandle<K, V>>) {
         self.handle.leaf_branch()
     }
-    pub fn get_leaf_branch<'a, 'b>(
+    pub fn _get_leaf_branch<'a, 'b>(
         &self,
         leaves: &'a Shared<V>,
         branches: &'b Shared<Branch<K, V>>,
@@ -154,7 +154,7 @@ impl<K, V> Node<K, V> {
             branch.map(|branch| branch.get(branches)),
         )
     }
-    pub fn get_leaf_branch_mut<'a, 'b>(
+    pub fn _get_leaf_branch_mut<'a, 'b>(
         &self,
         leaves: &'a mut Shared<V>,
         branches: &'b mut Shared<Branch<K, V>>,

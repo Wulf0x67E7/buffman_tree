@@ -14,7 +14,7 @@
 			"type": "cargo",
 			"command": "flamegraph",
 			"args": [
-				"--test",
+				"--bench",
 				"performance",
 				"--",
 				"performance",
