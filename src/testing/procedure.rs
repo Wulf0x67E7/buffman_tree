@@ -3,7 +3,11 @@ use crate::{
     util::debug_fn,
 };
 use quickcheck::{Arbitrary, Gen, TestResult, empty_shrinker};
-use std::{collections::BTreeMap, fmt::Debug};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Debug,
+    hash::Hash,
+};
 
 #[derive(Clone)]
 pub struct Procedure<T> {
@@ -34,6 +38,24 @@ impl<T> Default for Procedure<T> {
             actions: Default::default(),
             items: Default::default(),
         }
+    }
+}
+impl<T: Eq + Hash> FromIterator<Action<T>> for Procedure<T> {
+    fn from_iter<Iter: IntoIterator<Item = Action<T>>>(iter: Iter) -> Self {
+        let mut index = HashMap::new();
+        let actions = iter
+            .into_iter()
+            .map(|action| {
+                action.map_item(|item| {
+                    let len = index.len();
+                    *index.entry(item).or_insert(len)
+                })
+            })
+            .collect();
+        let mut items = index.into_iter().collect::<Vec<_>>();
+        items.sort_by_key(|(_, idx)| *idx);
+        let items = items.into_iter().map(|(item, _)| item).collect();
+        Self { actions, items }
     }
 }
 impl<T: Arbitrary> Procedure<T> {

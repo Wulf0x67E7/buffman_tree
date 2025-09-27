@@ -9,7 +9,7 @@ use std::{
     cmp::Ordering,
     fmt::Debug,
     iter::{self, Peekable},
-    mem::{take, transmute},
+    mem::{replace, take, transmute},
 };
 
 pub struct VNode<K, V> {
@@ -76,7 +76,7 @@ impl<K: Ord, V> VNode<K, V> {
             Self::start(
                 self.make_branch(trie)
                     .get_mut(&mut trie.branches)
-                    .get_or_insert(&mut trie.nodes, key),
+                    .get_or_insert(self.handle.leak(), &mut trie.nodes, key),
             )
         }
     }
@@ -100,7 +100,7 @@ impl<K: Ord, V> VNode<K, V> {
                 vnode
                     .make_branch(trie)
                     .get_mut(&mut trie.branches)
-                    .get_or_insert(&mut trie.nodes, key),
+                    .get_or_insert(vnode.handle.leak(), &mut trie.nodes, key),
             );
         }
     }
@@ -359,16 +359,29 @@ impl<K: Ord, V> VNode<K, V> {
         let node = self.handle.get_mut(nodes);
         match self.prefix_len.cmp(&node.prefix().len()) {
             Ordering::Less => {
-                let (value, new_node) = node.make_leaf_at(branches, leaves, value, self.prefix_len);
-                if let Some((key, new_node)) = new_node {
+                let (value, new_node) =
+                    node.make_leaf_at(self.handle.leak(), branches, leaves, value, self.prefix_len);
+                if let Some((key, mut new_node)) = new_node {
                     debug_assert!(!new_node.is_empty());
-                    node.get_branch_mut(branches)
+                    let new_node = Handle::new_with(nodes, |_this| {
+                        #[cfg(feature = "testing")]
+                        new_node.set_this(_this, branches, leaves);
+                        new_node
+                    });
+                    self.handle
+                        .get_mut(nodes)
+                        .get_branch_mut(branches)
                         .unwrap()
-                        .insert(key, Handle::new(nodes, new_node));
+                        .insert(key, new_node);
                 }
                 value
             }
-            Ordering::Equal => node.make_leaf(leaves, value),
+            Ordering::Equal => node.make_leaf(
+                #[cfg(feature = "testing")]
+                self.handle.leak(),
+                leaves,
+                value,
+            ),
             Ordering::Greater => unreachable!(),
         }
     }
@@ -376,10 +389,10 @@ impl<K: Ord, V> VNode<K, V> {
         self.as_node(&trie.nodes)?.leaf()
     }
     pub fn leaf<'a>(&self, trie: &'a Trie<K, V>) -> Option<&'a V> {
-        Some(self.leaf_handle(trie)?.get(&trie.leaves))
+        Some(self.leaf_handle(trie)?.get(&trie.leaves).get())
     }
     pub fn leaf_mut<'a>(&self, trie: &'a mut Trie<K, V>) -> Option<&'a mut V> {
-        Some(self.leaf_handle(trie)?.get_mut(&mut trie.leaves))
+        Some(self.leaf_handle(trie)?.get_mut(&mut trie.leaves).get_mut())
     }
     pub fn take_leaf(&self, trie: &mut Trie<K, V>) -> Option<(Self, V)> {
         let ret = self
@@ -388,19 +401,37 @@ impl<K: Ord, V> VNode<K, V> {
         Some((self.snap_prefix(trie), ret))
     }
     pub fn make_branch(&self, trie: &mut Trie<K, V>) -> BranchHandle<K, V> {
-        let node = self.handle.get_mut(&mut trie.nodes);
+        let Trie {
+            root: _,
+            nodes,
+            branches,
+            leaves: _leaves,
+        } = trie;
+        let node = self.handle.get_mut(nodes);
         match self.prefix_len.cmp(&node.prefix().len()) {
             Ordering::Less => {
-                let (branch, new_node) = node.make_branch_at(&mut trie.branches, self.prefix_len);
-                if let Some((key, new_node)) = new_node {
+                let (branch, new_node) =
+                    node.make_branch_at(self.handle.leak(), branches, self.prefix_len);
+                if let Some((key, mut new_node)) = new_node {
                     debug_assert!(!new_node.is_empty());
-                    node.get_branch_mut(&mut trie.branches)
+                    let new_node = Handle::new_with(nodes, |_this| {
+                        #[cfg(feature = "testing")]
+                        new_node.set_this(_this, branches, _leaves);
+                        new_node
+                    });
+                    self.handle
+                        .get_mut(nodes)
+                        .get_branch_mut(branches)
                         .unwrap()
-                        .insert(key, Handle::new(&mut trie.nodes, new_node));
+                        .insert(key, new_node);
                 }
                 branch
             }
-            Ordering::Equal => node.make_branch(&mut trie.branches),
+            Ordering::Equal => node.make_branch(
+                #[cfg(feature = "testing")]
+                self.handle.leak(),
+                &mut trie.branches,
+            ),
             Ordering::Greater => unreachable!(),
         }
     }
@@ -461,21 +492,26 @@ impl<K: Ord, V> VNode<K, V> {
         }
     }
     fn prune_contract(&self, trie: &mut Trie<K, V>, key: K, displaced: NodeHandle<K, V>) {
+        let Trie {
+            root: _,
+            nodes,
+            branches,
+            leaves: _leaves,
+        } = trie;
         // get node to contract into self
-        let mut displaced = displaced.remove(&mut trie.nodes);
-        // steal [key, ..prefix] to extend own
-        let mut prefix = take(self.is_node_mut(&mut trie.nodes).prefix_mut());
-        let tmp = displaced.prefix_mut();
-        prefix.push(key);
-        prefix.extend(tmp.drain(..));
-        *tmp = prefix;
+        let mut displaced = displaced.remove(nodes);
+        let node = self.is_node_mut(nodes);
+        // update displaced previous and this node to own
+        displaced.set_previous(node.previous().leak());
+        #[cfg(feature = "testing")]
+        displaced.set_this(self.handle.leak(), branches, _leaves);
+        // update displaced prefix to [own_prefix.., key, ..displaced_prefix]
+        let (tmp, prefix) = (node.prefix_mut(), displaced.prefix_mut());
+        tmp.push(key);
+        tmp.extend(prefix.drain(..));
+        *prefix = take(tmp);
         // replace empty self with displaced node
-        let old = self
-            .handle
-            .replace(&mut trie.nodes, displaced)
-            .branch()
-            .unwrap()
-            .remove(&mut trie.branches);
+        let old = replace(node, displaced).branch().unwrap().remove(branches);
         debug_assert!(old.is_empty());
     }
     pub fn prune_branch(&self, trie: &mut Trie<K, V>) -> bool {

@@ -2,6 +2,7 @@ use crate::{
     trie::{
         branch::Branch,
         handle::{Handle, Shared},
+        leaf::{Leaf, LeafHandle},
         node::{Node, NodeHandle},
         vnode::VNode,
     },
@@ -9,17 +10,16 @@ use crate::{
 };
 pub(self) mod branch;
 pub(self) mod handle;
+pub(self) mod leaf;
 pub(self) mod node;
 pub(self) mod vnode;
 use std::{borrow::Borrow, convert::identity, fmt::Debug};
-
-pub(self) type LeafHandle<V> = Handle<V>;
 
 pub struct Trie<K, V> {
     root: NodeHandle<K, V>,
     nodes: Shared<Node<K, V>>,
     branches: Shared<Branch<K, V>>,
-    leaves: Shared<V>,
+    leaves: Shared<Leaf<V>>,
 }
 impl<K: Debug, V: Debug> Debug for Trie<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,7 +32,15 @@ impl<K, V> Default for Trie<K, V> {
     fn default() -> Self {
         let mut nodes = Handle::new_shared();
         Self {
-            root: Handle::new_default(&mut nodes),
+            root: Handle::new_with(&mut nodes, |_this| {
+                Node::from(
+                    #[cfg(feature = "testing")]
+                    _this,
+                    Handle::new_null(),
+                    vec![],
+                    (),
+                )
+            }),
             nodes,
             branches: Handle::new_shared(),
             leaves: Handle::new_shared(),
@@ -43,7 +51,15 @@ impl<K, V> Trie<K, V> {
     pub fn with_capacity(capacity: usize) -> Self {
         let mut nodes = Handle::new_shared_with_capacity(capacity);
         Self {
-            root: Handle::new_default(&mut nodes),
+            root: Handle::new_with(&mut nodes, |_this| {
+                Node::from(
+                    #[cfg(feature = "testing")]
+                    _this,
+                    Handle::new_null(),
+                    vec![],
+                    (),
+                )
+            }),
             nodes,
             branches: Handle::new_shared_with_capacity(capacity),
             leaves: Handle::new_shared_with_capacity(capacity),
@@ -111,7 +127,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     where
         K: Borrow<Q>,
     {
-        Some(self.get_handle(key)?.get(&self.leaves))
+        Some(self.get_handle(key)?.get(&self.leaves).get())
     }
     pub fn get_mut<'a, Q: 'a + PartialEq + Ord>(
         &mut self,
@@ -120,7 +136,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     where
         K: Borrow<Q>,
     {
-        Some(self.get_handle(key)?.get_mut(&mut self.leaves))
+        Some(self.get_handle(key)?.get_mut(&mut self.leaves).get_mut())
     }
     pub fn try_get<'a, Q: 'a + PartialEq + Ord>(
         &self,
@@ -131,8 +147,11 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     {
         Ok(self
             .try_get_handle(key)
-            .map_err(Option::remap(|leaf: Handle<V>| leaf.get(&self.leaves)))?
-            .get(&self.leaves))
+            .map_err(Option::remap(|leaf: LeafHandle<V>| {
+                leaf.get(&self.leaves).get()
+            }))?
+            .get(&self.leaves)
+            .get())
     }
     pub fn try_get_mut<'a, Q: 'a + PartialEq + Ord>(
         &mut self,
@@ -142,8 +161,8 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
         K: Borrow<Q>,
     {
         match self.try_get_handle(key) {
-            Ok(node) => Ok(node.get_mut(&mut self.leaves)),
-            Err(Some(node)) => Err(Some(node.get_mut(&mut self.leaves))),
+            Ok(node) => Ok(node.get_mut(&mut self.leaves).get_mut()),
+            Err(Some(node)) => Err(Some(node.get_mut(&mut self.leaves).get_mut())),
             Err(None) => Err(None),
         }
     }
@@ -190,7 +209,15 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
         self.nodes.clear();
         self.branches.clear();
         self.leaves.clear();
-        self.root = Handle::new_default(&mut self.nodes);
+        self.root = Handle::new_with(&mut self.nodes, |_this| {
+            Node::from(
+                #[cfg(feature = "testing")]
+                _this,
+                Handle::new_null(),
+                vec![],
+                (),
+            )
+        });
     }
     pub fn into_iter(self) -> impl Iterator<Item = V>
     where
@@ -210,7 +237,7 @@ impl<K: Ord, V> Trie<K, V> {
     fn get_handle<'a, Q: 'a + PartialEq + Ord>(
         &self,
         key: impl IntoIterator<Item = &'a Q>,
-    ) -> Option<Handle<V>>
+    ) -> Option<LeafHandle<V>>
     where
         K: Borrow<Q>,
     {
