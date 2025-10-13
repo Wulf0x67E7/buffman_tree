@@ -1,6 +1,6 @@
 use crate::trie::{
     LeafHandle, Trie,
-    branch::{Branch, BranchHandle},
+    branch::{BTreeBranch, Branch, BranchHandle},
     handle::{Handle, Shared},
     node::{Node, NodeHandle},
 };
@@ -266,7 +266,7 @@ impl<K: Ord, V> VNode<K, V> {
             loop {
                 let node = stack.pop()?.skip_prefix(&trie);
                 if let Some(branch) = node.branch(&trie) {
-                    stack.extend(branch.values().rev().map(|node| Self {
+                    stack.extend(branch.values().map(|node| Self {
                         prefix_len: 0,
                         handle: node.leak(),
                     }));
@@ -283,7 +283,7 @@ impl<K: Ord, V> VNode<K, V> {
             loop {
                 let node = stack.pop()?.skip_prefix(trie);
                 if let Some(branch) = node.branch(trie) {
-                    stack.extend(branch.values().rev().map(|node| Self {
+                    stack.extend(branch.values().map(|node| Self {
                         prefix_len: 0,
                         handle: node.leak(),
                     }));
@@ -304,7 +304,7 @@ impl<K: Ord, V> VNode<K, V> {
             loop {
                 let node = stack.pop()?.skip_prefix(trie);
                 if let Some(branch) = node.branch(trie) {
-                    stack.extend(branch.values().rev().map(|node| Self {
+                    stack.extend(branch.values().map(|node| Self {
                         prefix_len: 0,
                         handle: node.leak(),
                     }));
@@ -438,10 +438,13 @@ impl<K: Ord, V> VNode<K, V> {
     pub fn _branch_handle(&self, trie: &Trie<K, V>) -> Option<BranchHandle<K, V>> {
         self.as_node(&trie.nodes)?.branch()
     }
-    pub fn branch<'a>(&self, trie: &'a Trie<K, V>) -> Option<&'a Branch<K, V>> {
+    pub fn branch<'a>(&self, trie: &'a Trie<K, V>) -> Option<&'a BTreeBranch<K, V>> {
         self.as_node(&trie.nodes)?.get_branch(&trie.branches)
     }
-    pub fn _branch_mut<'a>(&mut self, trie: &'a mut Trie<K, V>) -> Option<&'a mut Branch<K, V>> {
+    pub fn _branch_mut<'a>(
+        &mut self,
+        trie: &'a mut Trie<K, V>,
+    ) -> Option<&'a mut BTreeBranch<K, V>> {
         self.as_node_mut(&mut trie.nodes)?
             .get_branch_mut(&mut trie.branches)
     }

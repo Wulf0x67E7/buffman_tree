@@ -1,7 +1,7 @@
 use crate::{
     trie::{
-        Handle, LeafHandle, Trie,
-        branch::{Branch, BranchHandle},
+        Handle, LeafHandle, NodeDebug, Trie,
+        branch::{BTreeBranch, BranchHandle},
         handle::Shared,
         leaf::Leaf,
     },
@@ -96,17 +96,39 @@ pub struct Node<K, V> {
     #[cfg(feature = "testing")]
     this: NodeHandle<K, V>,
 }
-//impl<K, V> Default for Node<K, V> {
-//    fn default() -> Self {
-//        Self {
-//            previous: Handle::new_null(),
-//            prefix: Default::default(),
-//            data: Default::default(),
-//            #[cfg(feature = "testing")]
-//            this: Handle::new_null(),
-//        }
-//    }
-//}
+impl<K, V> NodeDebug<K, V> for Node<K, V> {
+    fn default_with_owner(#[cfg(feature = "testing")] owner: NodeHandle<K, V>) -> Self {
+        Self::from(owner, Handle::new_null(), Vec::default(), ())
+    }
+    fn debug<'a>(&'a self, trie: &'a Trie<K, V>) -> impl 'a + Debug
+    where
+        K: Debug,
+        V: Debug,
+    {
+        debug_fn(|f| {
+            let mut f = f.debug_struct(match self.data {
+                DataHandle::Empty => "Node::Empty",
+                DataHandle::Leaf(_) => "Node::Leaf",
+                DataHandle::Branch(_) => "Node::Branch",
+                DataHandle::Full { .. } => "Node::Full",
+            });
+            if !self.prefix().is_empty() {
+                f.field("prefix", &self.prefix);
+            }
+            if let Some(leaf) = self.leaf() {
+                f.field("leaf", &leaf.get(&trie.leaves));
+            }
+            if let Some(branch) = self.branch() {
+                f.field("branch", &branch.get(&trie.branches).debug(trie));
+            }
+            f.finish()
+        })
+    }
+    fn set_owner(&mut self, owner: NodeHandle<K, V>) -> NodeHandle<K, V> {
+        use std::mem::replace;
+        replace(&mut self.this, owner)
+    }
+}
 impl<K, V> Node<K, V> {
     pub fn _from_null<T: Into<DataHandle<K, V>>>(prefix: Vec<K>, handle: T) -> Self {
         Self::from(
@@ -150,14 +172,14 @@ impl<K, V> Node<K, V> {
     pub(super) fn set_this(
         &mut self,
         this: NodeHandle<K, V>,
-        branches: &mut Shared<Branch<K, V>>,
+        branches: &mut Shared<BTreeBranch<K, V>>,
         leaves: &mut Shared<Leaf<V>>,
     ) -> NodeHandle<K, V> {
         let (old_a, old_b, old_c) = (
             replace(&mut self.this, this.leak()),
             self.get_branch_mut(branches)
-                .map(|branch| branch.set_this(this.leak())),
-            self._get_leaf_mut(leaves).map(|leaf| leaf.set_this(this)),
+                .map(|branch| branch.set_owner(this.leak())),
+            self._get_leaf_mut(leaves).map(|leaf| leaf.set_owner(this)),
         );
         if let Some(old_b) = old_b
             && !old_a._is_null()
@@ -179,13 +201,16 @@ impl<K, V> Node<K, V> {
     pub fn branch(&self) -> Option<BranchHandle<K, V>> {
         self.data.branch()
     }
-    pub fn get_branch<'a>(&self, branches: &'a Shared<Branch<K, V>>) -> Option<&'a Branch<K, V>> {
+    pub fn get_branch<'a>(
+        &self,
+        branches: &'a Shared<BTreeBranch<K, V>>,
+    ) -> Option<&'a BTreeBranch<K, V>> {
         Some(self.data.branch()?.get(branches))
     }
     pub fn get_branch_mut<'a>(
         &self,
-        branches: &'a mut Shared<Branch<K, V>>,
-    ) -> Option<&'a mut Branch<K, V>> {
+        branches: &'a mut Shared<BTreeBranch<K, V>>,
+    ) -> Option<&'a mut BTreeBranch<K, V>> {
         Some(self.data.branch()?.get_mut(branches))
     }
     pub fn leaf(&self) -> Option<LeafHandle<V>> {
@@ -203,8 +228,8 @@ impl<K, V> Node<K, V> {
     pub fn _get_leaf_branch<'a, 'b>(
         &self,
         leaves: &'a Shared<Leaf<V>>,
-        branches: &'b Shared<Branch<K, V>>,
-    ) -> (Option<&'a V>, Option<&'b Branch<K, V>>) {
+        branches: &'b Shared<BTreeBranch<K, V>>,
+    ) -> (Option<&'a V>, Option<&'b BTreeBranch<K, V>>) {
         let (leaf, branch) = self.leaf_branch();
         (
             leaf.map(|leaf| leaf.get(leaves).get()),
@@ -214,37 +239,13 @@ impl<K, V> Node<K, V> {
     pub fn _get_leaf_branch_mut<'a, 'b>(
         &self,
         leaves: &'a mut Shared<Leaf<V>>,
-        branches: &'b mut Shared<Branch<K, V>>,
-    ) -> (Option<&'a mut V>, Option<&'b mut Branch<K, V>>) {
+        branches: &'b mut Shared<BTreeBranch<K, V>>,
+    ) -> (Option<&'a mut V>, Option<&'b mut BTreeBranch<K, V>>) {
         let (leaf, branch) = self.leaf_branch();
         (
             leaf.map(|leaf| leaf.get_mut(leaves).get_mut()),
             branch.map(|branch| branch.get_mut(branches)),
         )
-    }
-    pub fn node_debug<'a>(&'a self, trie: &'a Trie<K, V>) -> impl 'a + Debug
-    where
-        K: Debug,
-        V: Debug,
-    {
-        debug_fn(|f| {
-            let mut f = f.debug_struct(match self.data {
-                DataHandle::Empty => "Node::Empty",
-                DataHandle::Leaf(_) => "Node::Leaf",
-                DataHandle::Branch(_) => "Node::Branch",
-                DataHandle::Full { .. } => "Node::Full",
-            });
-            if !self.prefix().is_empty() {
-                f.field("prefix", &self.prefix);
-            }
-            if let Some(leaf) = self.leaf() {
-                f.field("leaf", &leaf.get(&trie.leaves));
-            }
-            if let Some(branch) = self.branch() {
-                f.field("branch", &branch.get(&trie.branches).branch_debug(trie));
-            }
-            f.finish()
-        })
     }
 }
 impl<K: Ord, V> Node<K, V> {
@@ -259,9 +260,9 @@ impl<K: Ord, V> Node<K, V> {
                 self.data = DataHandle::Leaf(Handle::new(
                     leaves,
                     Leaf::new(
-                        value,
                         #[cfg(feature = "testing")]
                         this,
+                        value,
                     ),
                 ));
                 None
@@ -274,9 +275,9 @@ impl<K: Ord, V> Node<K, V> {
                     leaf: Handle::new(
                         leaves,
                         Leaf::new(
-                            value,
                             #[cfg(feature = "testing")]
                             this,
+                            value,
                         ),
                     ),
                     branch: handle,
@@ -288,7 +289,7 @@ impl<K: Ord, V> Node<K, V> {
     pub fn make_leaf_at(
         &mut self,
         this: NodeHandle<K, V>,
-        branches: &mut Shared<Branch<K, V>>,
+        branches: &mut Shared<BTreeBranch<K, V>>,
         leaves: &mut Shared<Leaf<V>>,
         value: V,
         leaf_at: usize,
@@ -329,7 +330,7 @@ impl<K: Ord, V> Node<K, V> {
     pub fn make_branch(
         &mut self,
         #[cfg(feature = "testing")] _this: NodeHandle<K, V>,
-        branches: &mut Shared<Branch<K, V>>,
+        branches: &mut Shared<BTreeBranch<K, V>>,
     ) -> BranchHandle<K, V> {
         #[cfg(feature = "testing")]
         assert_eq!(self.this, _this);
@@ -338,7 +339,7 @@ impl<K: Ord, V> Node<K, V> {
             DataHandle::Empty => {
                 branch_handle = Handle::new(
                     branches,
-                    Branch::new(
+                    BTreeBranch::default_with_owner(
                         #[cfg(feature = "testing")]
                         _this,
                     ),
@@ -349,7 +350,7 @@ impl<K: Ord, V> Node<K, V> {
             DataHandle::Leaf(leaf) => {
                 branch_handle = Handle::new(
                     branches,
-                    Branch::new(
+                    BTreeBranch::default_with_owner(
                         #[cfg(feature = "testing")]
                         _this,
                     ),
@@ -367,7 +368,7 @@ impl<K: Ord, V> Node<K, V> {
     pub fn make_branch_at(
         &mut self,
         this: NodeHandle<K, V>,
-        branches: &mut Shared<Branch<K, V>>,
+        branches: &mut Shared<BTreeBranch<K, V>>,
         branch_at: usize,
     ) -> (BranchHandle<K, V>, Option<(K, Node<K, V>)>) {
         assert!(branch_at <= self.prefix().len());

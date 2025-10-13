@@ -1,6 +1,6 @@
 use std::mem::{replace, take};
 
-use crate::trie::handle::Handle;
+use crate::{NodeDebug, trie::handle::Handle};
 
 pub type LeafHandle<V> = Handle<Leaf<V>>;
 
@@ -8,40 +8,50 @@ pub type LeafHandle<V> = Handle<Leaf<V>>;
 pub struct Leaf<V> {
     value: V,
     #[cfg(feature = "testing")]
-    this: usize,
+    owner: usize,
 }
 impl<V: Default> Default for Leaf<V> {
     fn default() -> Self {
         Self {
             value: Default::default(),
             #[cfg(feature = "testing")]
-            this: Handle::<()>::new_null()._unwrap(),
+            owner: Handle::<()>::new_null()._unwrap(),
         }
     }
 }
-
+impl<K, V> NodeDebug<K, V> for Leaf<V> {
+    fn default_with_owner(#[cfg(feature = "testing")] owner: super::node::NodeHandle<K, V>) -> Self
+    where
+        Self: Default,
+    {
+        Self {
+            #[cfg(feature = "testing")]
+            owner: owner._unwrap(),
+            ..Default::default()
+        }
+    }
+    fn debug<'a>(&'a self, _: &'a super::Trie<K, V>) -> impl 'a + std::fmt::Debug
+    where
+        K: std::fmt::Debug,
+        V: std::fmt::Debug,
+    {
+        &self.value
+    }
+    fn set_owner(&mut self, owner: super::node::NodeHandle<K, V>) -> super::node::NodeHandle<K, V> {
+        use std::mem::replace;
+        Handle::from(replace(&mut self.owner, owner._unwrap()))
+    }
+}
 impl<V> Leaf<V> {
     pub fn new<#[cfg(feature = "testing")] K>(
+        #[cfg(feature = "testing")] owner: super::node::NodeHandle<K, V>,
         value: V,
-        #[cfg(feature = "testing")] this: super::node::NodeHandle<K, V>,
     ) -> Self {
         Self {
             value,
             #[cfg(feature = "testing")]
-            this: this._unwrap(),
+            owner: owner._unwrap(),
         }
-    }
-    #[cfg(feature = "testing")]
-    pub fn _this<K>(&self) -> super::node::NodeHandle<K, V> {
-        Handle::from(self.this)
-    }
-    #[cfg(feature = "testing")]
-    pub fn set_this<K>(
-        &mut self,
-        this: super::node::NodeHandle<K, V>,
-    ) -> super::node::NodeHandle<K, V> {
-        use std::mem::replace;
-        Handle::from(replace(&mut self.this, this._unwrap()))
     }
     pub fn get(&self) -> &V {
         &self.value

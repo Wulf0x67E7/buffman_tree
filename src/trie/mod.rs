@@ -1,6 +1,6 @@
 use crate::{
     trie::{
-        branch::Branch,
+        branch::BTreeBranch,
         handle::{Handle, Shared},
         leaf::{Leaf, LeafHandle},
         node::{Node, NodeHandle},
@@ -15,16 +15,28 @@ pub(self) mod node;
 pub(self) mod vnode;
 use std::{borrow::Borrow, convert::identity, fmt::Debug};
 
+pub trait NodeDebug<K, V> {
+    fn default_with_owner(#[cfg(feature = "testing")] owner: NodeHandle<K, V>) -> Self
+    where
+        Self: Default;
+    fn debug<'a>(&'a self, trie: &'a Trie<K, V>) -> impl 'a + Debug
+    where
+        K: Debug,
+        V: Debug;
+    #[cfg(feature = "testing")]
+    fn set_owner(&mut self, owner: NodeHandle<K, V>) -> NodeHandle<K, V>;
+}
+
 pub struct Trie<K, V> {
     root: NodeHandle<K, V>,
     nodes: Shared<Node<K, V>>,
-    branches: Shared<Branch<K, V>>,
+    branches: Shared<BTreeBranch<K, V>>,
     leaves: Shared<Leaf<V>>,
 }
 impl<K: Debug, V: Debug> Debug for Trie<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Trie")
-            .field(&self.root.get(&self.nodes).node_debug(&self))
+            .field(&self.root.get(&self.nodes).debug(&self))
             .finish()
     }
 }
