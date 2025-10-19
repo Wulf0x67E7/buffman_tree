@@ -19,8 +19,10 @@ impl<V: Default> Default for Leaf<V> {
         }
     }
 }
-impl<K, V> NodeDebug<K, V> for Leaf<V> {
-    fn default_with_owner(#[cfg(feature = "testing")] owner: super::node::NodeHandle<K, V>) -> Self
+impl<K, V, B> NodeDebug<K, V, B> for Leaf<V> {
+    fn default_with_owner(
+        #[cfg(feature = "testing")] owner: super::node::NodeHandle<K, V, B>,
+    ) -> Self
     where
         Self: Default,
     {
@@ -30,21 +32,24 @@ impl<K, V> NodeDebug<K, V> for Leaf<V> {
             ..Default::default()
         }
     }
-    fn debug<'a>(&'a self, _: &'a super::Trie<K, V>) -> impl 'a + std::fmt::Debug
+    fn debug<'a>(&'a self, _: &'a super::Trie<K, V, B>) -> impl 'a + std::fmt::Debug
     where
         K: std::fmt::Debug,
         V: std::fmt::Debug,
     {
         &self.value
     }
-    fn set_owner(&mut self, owner: super::node::NodeHandle<K, V>) -> super::node::NodeHandle<K, V> {
+    fn set_owner(
+        &mut self,
+        owner: super::node::NodeHandle<K, V, B>,
+    ) -> super::node::NodeHandle<K, V, B> {
         use std::mem::replace;
         Handle::from(replace(&mut self.owner, owner._unwrap()))
     }
 }
 impl<V> Leaf<V> {
-    pub fn new<#[cfg(feature = "testing")] K>(
-        #[cfg(feature = "testing")] owner: super::node::NodeHandle<K, V>,
+    pub fn new<#[cfg(feature = "testing")] K, #[cfg(feature = "testing")] B>(
+        #[cfg(feature = "testing")] owner: super::node::NodeHandle<K, V, B>,
         value: V,
     ) -> Self {
         Self {

@@ -45,8 +45,14 @@ impl<T> Handle<T> {
     pub fn _is_null(&self) -> bool {
         self.0 == usize::MAX
     }
+    pub fn is_valid(&self) -> bool {
+        !self._is_null()
+    }
     pub fn leak(&self) -> Self {
         Self::from(self.0)
+    }
+    pub fn valid(self) -> Option<Self> {
+        (!self._is_null()).then_some(self)
     }
     pub fn _get_null<'a>(&self, shared: &'a Slab<T>) -> Option<&'a T> {
         (!self._is_null()).then(|| self.get(shared))

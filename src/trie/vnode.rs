@@ -1,6 +1,6 @@
 use crate::trie::{
     LeafHandle, Trie,
-    branch::{BTreeBranch, Branch, BranchHandle},
+    branch::Branch,
     handle::{Handle, Shared},
     node::{Node, NodeHandle},
 };
@@ -12,11 +12,11 @@ use std::{
     mem::{replace, take, transmute},
 };
 
-pub struct VNode<K, V> {
+pub struct VNode<K, V, B> {
     prefix_len: usize,
-    handle: NodeHandle<K, V>,
+    handle: NodeHandle<K, V, B>,
 }
-impl<K, V> Debug for VNode<K, V> {
+impl<K, V, B> Debug for VNode<K, V, B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VNode")
             .field("prefix_len", &self.prefix_len)
@@ -24,14 +24,14 @@ impl<K, V> Debug for VNode<K, V> {
             .finish()
     }
 }
-impl<K, V> PartialEq for VNode<K, V> {
+impl<K, V, B> PartialEq for VNode<K, V, B> {
     fn eq(&self, other: &Self) -> bool {
         self.prefix_len == other.prefix_len && self.handle == other.handle
     }
 }
 /// Navigation methods
-impl<K: Ord, V> VNode<K, V> {
-    pub fn start(root: NodeHandle<K, V>) -> Self {
+impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
+    pub fn start(root: NodeHandle<K, V, B>) -> Self {
         Self {
             prefix_len: 0,
             handle: root,
@@ -43,9 +43,10 @@ impl<K: Ord, V> VNode<K, V> {
             handle: self.handle.leak(),
         }
     }
-    pub fn next<Q: PartialEq + Ord>(&self, trie: &Trie<K, V>, key: &Q) -> Option<Self>
+    pub fn next<Q: PartialEq>(&self, trie: &Trie<K, V, B>, key: &Q) -> Option<Self>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         match self.as_node(&trie.nodes) {
             None if self.handle.get(&trie.nodes).prefix()[self.prefix_len].borrow() == key => {
@@ -61,7 +62,10 @@ impl<K: Ord, V> VNode<K, V> {
             None => None,
         }
     }
-    pub fn _make_next(&self, trie: &mut Trie<K, V>, key: K) -> Self {
+    pub fn _make_next(&self, trie: &mut Trie<K, V, B>, key: K) -> Self
+    where
+        K: PartialEq,
+    {
         if let Some(next) = self.next(trie, &key) {
             return next;
         }
@@ -80,7 +84,10 @@ impl<K: Ord, V> VNode<K, V> {
             )
         }
     }
-    pub fn make_descend(&self, trie: &mut Trie<K, V>, key: impl IntoIterator<Item = K>) -> Self {
+    pub fn make_descend(&self, trie: &mut Trie<K, V, B>, key: impl IntoIterator<Item = K>) -> Self
+    where
+        K: PartialEq,
+    {
         let mut vnode = self.leak();
         let mut key = key.into_iter().peekable();
         loop {
@@ -109,14 +116,15 @@ impl<K: Ord, V> VNode<K, V> {
     /// excluding the target returned inside [Result::Ok].
     /// A returned [Result::Err] will contain the [VNode] that has either been rejected
     /// by inspect, or where 'key' pointed towards a non-existent branch.
-    pub fn descend<'a, Q: 'a + PartialEq + Ord>(
+    pub fn descend<'a, Q: 'a + PartialEq>(
         &self,
-        trie: &Trie<K, V>,
+        trie: &Trie<K, V, B>,
         key: impl IntoIterator<Item = &'a Q>,
-        mut inspect: impl FnMut(Self, &Trie<K, V>, &'a Q) -> bool,
+        mut inspect: impl FnMut(Self, &Trie<K, V, B>, &'a Q) -> bool,
     ) -> Result<Self, Self>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         let mut key = key.into_iter().peekable();
         let mut node = self.leak();
@@ -136,14 +144,15 @@ impl<K: Ord, V> VNode<K, V> {
     /// excluding the target returned inside [Result::Ok].
     /// A returned [Result::Err] will contain the [VNode] that has either been rejected
     /// by inspect, or where 'key' pointed towards a non-existent branch.
-    pub fn descend_mut<'a, Q: 'a + PartialEq + Ord>(
+    pub fn descend_mut<'a, Q: 'a + PartialEq>(
         &self,
-        trie: &mut Trie<K, V>,
+        trie: &mut Trie<K, V, B>,
         key: impl IntoIterator<Item = &'a Q>,
-        mut inspect: impl FnMut(Self, &mut Trie<K, V>, &'a Q) -> bool,
+        mut inspect: impl FnMut(Self, &mut Trie<K, V, B>, &'a Q) -> bool,
     ) -> Result<Self, Self>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         let mut key = key.into_iter().peekable();
         let mut node = self.leak();
@@ -166,14 +175,15 @@ impl<K: Ord, V> VNode<K, V> {
     /// should the search otherwise fail and [Option::None] keeping the previous one.
     /// When 'f' never succeeds nor gives a backup, [Result::Err] will contain the [VNode] where 'key'
     /// ran out or pointed towards a non-existent branch.
-    pub fn find<'a, Q: 'a + PartialEq + Ord, T>(
+    pub fn find<'a, Q: 'a + PartialEq, T>(
         &self,
-        trie: &Trie<K, V>,
+        trie: &Trie<K, V, B>,
         key: impl IntoIterator<Item = &'a Q>,
-        mut f: impl FnMut(Self, &Trie<K, V>) -> Result<T, Option<T>>,
+        mut f: impl FnMut(Self, &Trie<K, V, B>) -> Result<T, Option<T>>,
     ) -> Result<T, Self>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         let mut node = self.leak();
         let mut backup = None;
@@ -206,16 +216,17 @@ impl<K: Ord, V> VNode<K, V> {
     /// A returned [Result::Err] will contain the [VNode] that has either been rejected
     /// by 'inspect_descend', where 'key' pointed towards a non-existent branch,
     /// or 'inspect_target' returned [Option::None].
-    pub fn dive<'a, T, Q: 'a + PartialEq + Ord>(
+    pub fn dive<'a, T, Q: 'a + PartialEq>(
         &self,
-        trie: &mut Trie<K, V>,
+        trie: &mut Trie<K, V, B>,
         key: impl IntoIterator<Item = &'a Q>,
-        mut inspect_descend: impl FnMut(Self, &mut Trie<K, V>, &'a Q) -> bool,
-        inspect_target: impl FnOnce(Self, &mut Trie<K, V>) -> Option<T>,
-        mut inspect_ascend: impl FnMut(Self, &mut Trie<K, V>, &'a Q) -> bool,
+        mut inspect_descend: impl FnMut(Self, &mut Trie<K, V, B>, &'a Q) -> bool,
+        inspect_target: impl FnOnce(Self, &mut Trie<K, V, B>) -> Option<T>,
+        mut inspect_ascend: impl FnMut(Self, &mut Trie<K, V, B>, &'a Q) -> bool,
     ) -> Result<T, Self>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         let mut stack = vec![];
         let target = self.descend_mut(trie, key, |node, trie, key| {
@@ -231,19 +242,19 @@ impl<K: Ord, V> VNode<K, V> {
         }
         Ok(ret)
     }
-    pub fn snap_prefix(&self, trie: &Trie<K, V>) -> Self {
+    pub fn snap_prefix(&self, trie: &Trie<K, V, B>) -> Self {
         let handle = self.handle.leak();
         let prefix_len = self.prefix_len.min(handle.get(&trie.nodes).prefix().len());
         Self { prefix_len, handle }
     }
-    pub fn skip_prefix(&self, trie: &Trie<K, V>) -> Self {
+    pub fn skip_prefix(&self, trie: &Trie<K, V, B>) -> Self {
         let handle = self.handle.leak();
         let prefix_len = handle.get(&trie.nodes).prefix().len();
         Self { prefix_len, handle }
     }
     pub fn try_skip_prefix<Q: PartialEq>(
         &self,
-        trie: &Trie<K, V>,
+        trie: &Trie<K, V, B>,
         key: &mut Peekable<impl Iterator<Item = Q>>,
         eq: impl Fn(&K, &Q) -> bool,
     ) -> Self {
@@ -260,7 +271,7 @@ impl<K: Ord, V> VNode<K, V> {
             handle,
         }
     }
-    pub fn into_iter(&self, mut trie: Trie<K, V>) -> impl use<K, V> + Iterator<Item = V> {
+    pub fn into_iter(&self, mut trie: Trie<K, V, B>) -> impl use<K, V, B> + Iterator<Item = V> {
         let mut stack = vec![self.leak()];
         iter::from_fn(move || {
             loop {
@@ -277,7 +288,10 @@ impl<K: Ord, V> VNode<K, V> {
             }
         })
     }
-    pub fn iter<'a>(&self, trie: &'a Trie<K, V>) -> impl use<'a, K, V> + Iterator<Item = &'a V> {
+    pub fn iter<'a>(
+        &self,
+        trie: &'a Trie<K, V, B>,
+    ) -> impl use<'a, K, V, B> + Iterator<Item = &'a V> {
         let mut stack = vec![self.leak()];
         iter::from_fn(move || {
             loop {
@@ -297,8 +311,8 @@ impl<K: Ord, V> VNode<K, V> {
 
     pub fn iter_mut<'a>(
         &self,
-        trie: &'a mut Trie<K, V>,
-    ) -> impl use<'a, K, V> + Iterator<Item = &'a mut V> {
+        trie: &'a mut Trie<K, V, B>,
+    ) -> impl use<'a, K, V, B> + Iterator<Item = &'a mut V> {
         let mut stack = vec![self.leak()];
         iter::from_fn(move || {
             loop {
@@ -322,34 +336,37 @@ impl<K: Ord, V> VNode<K, V> {
 }
 
 /// Manipulation methods
-impl<K: Ord, V> VNode<K, V> {
-    pub fn empty_node(&self, nodes: &Shared<Node<K, V>>) -> bool {
+impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
+    pub fn empty_node(&self, nodes: &Shared<Node<K, V, B>>) -> bool {
         self.handle.get(nodes).is_empty()
     }
-    pub fn is_node_handle(&self, nodes: &Shared<Node<K, V>>) -> NodeHandle<K, V> {
+    pub fn is_node_handle(&self, nodes: &Shared<Node<K, V, B>>) -> NodeHandle<K, V, B> {
         self.as_node_handle(nodes)
             .expect("VNode isn't actual Node.")
     }
-    pub fn is_node<'a>(&self, nodes: &'a Shared<Node<K, V>>) -> &'a Node<K, V> {
+    pub fn is_node<'a>(&self, nodes: &'a Shared<Node<K, V, B>>) -> &'a Node<K, V, B> {
         self.is_node_handle(nodes).get(nodes)
     }
-    pub fn is_node_mut<'a>(&self, nodes: &'a mut Shared<Node<K, V>>) -> &'a mut Node<K, V> {
+    pub fn is_node_mut<'a>(&self, nodes: &'a mut Shared<Node<K, V, B>>) -> &'a mut Node<K, V, B> {
         self.is_node_handle(nodes).get_mut(nodes)
     }
-    pub fn as_node_handle(&self, nodes: &Shared<Node<K, V>>) -> Option<NodeHandle<K, V>> {
+    pub fn as_node_handle(&self, nodes: &Shared<Node<K, V, B>>) -> Option<NodeHandle<K, V, B>> {
         match self.prefix_len.cmp(&self.handle.get(nodes).prefix().len()) {
             Ordering::Less => None,
             Ordering::Equal => Some(self.handle.leak()),
             Ordering::Greater => panic!("Invalid VNode"),
         }
     }
-    pub fn as_node<'a>(&self, nodes: &'a Shared<Node<K, V>>) -> Option<&'a Node<K, V>> {
+    pub fn as_node<'a>(&self, nodes: &'a Shared<Node<K, V, B>>) -> Option<&'a Node<K, V, B>> {
         Some(self.as_node_handle(nodes)?.get(nodes))
     }
-    pub fn as_node_mut<'a>(&self, nodes: &'a mut Shared<Node<K, V>>) -> Option<&'a mut Node<K, V>> {
+    pub fn as_node_mut<'a>(
+        &self,
+        nodes: &'a mut Shared<Node<K, V, B>>,
+    ) -> Option<&'a mut Node<K, V, B>> {
         Some(self.as_node_handle(nodes)?.get_mut(nodes))
     }
-    pub fn make_leaf(&self, trie: &mut Trie<K, V>, value: V) -> Option<V> {
+    pub fn make_leaf(&self, trie: &mut Trie<K, V, B>, value: V) -> Option<V> {
         let Trie {
             root: _,
             nodes,
@@ -385,22 +402,22 @@ impl<K: Ord, V> VNode<K, V> {
             Ordering::Greater => unreachable!(),
         }
     }
-    pub fn leaf_handle(&self, trie: &Trie<K, V>) -> Option<LeafHandle<V>> {
+    pub fn leaf_handle(&self, trie: &Trie<K, V, B>) -> Option<LeafHandle<V>> {
         self.as_node(&trie.nodes)?.leaf()
     }
-    pub fn leaf<'a>(&self, trie: &'a Trie<K, V>) -> Option<&'a V> {
+    pub fn leaf<'a>(&self, trie: &'a Trie<K, V, B>) -> Option<&'a V> {
         Some(self.leaf_handle(trie)?.get(&trie.leaves).get())
     }
-    pub fn leaf_mut<'a>(&self, trie: &'a mut Trie<K, V>) -> Option<&'a mut V> {
+    pub fn leaf_mut<'a>(&self, trie: &'a mut Trie<K, V, B>) -> Option<&'a mut V> {
         Some(self.leaf_handle(trie)?.get_mut(&mut trie.leaves).get_mut())
     }
-    pub fn take_leaf(&self, trie: &mut Trie<K, V>) -> Option<(Self, V)> {
+    pub fn take_leaf(&self, trie: &mut Trie<K, V, B>) -> Option<(Self, V)> {
         let ret = self
             .as_node_mut(&mut trie.nodes)?
             .take_leaf(&mut trie.leaves)?;
         Some((self.snap_prefix(trie), ret))
     }
-    pub fn make_branch(&self, trie: &mut Trie<K, V>) -> BranchHandle<K, V> {
+    pub fn make_branch(&self, trie: &mut Trie<K, V, B>) -> Handle<B> {
         let Trie {
             root: _,
             nodes,
@@ -435,27 +452,20 @@ impl<K: Ord, V> VNode<K, V> {
             Ordering::Greater => unreachable!(),
         }
     }
-    pub fn _branch_handle(&self, trie: &Trie<K, V>) -> Option<BranchHandle<K, V>> {
+    pub fn _branch_handle(&self, trie: &Trie<K, V, B>) -> Option<Handle<B>> {
         self.as_node(&trie.nodes)?.branch()
     }
-    pub fn branch<'a>(&self, trie: &'a Trie<K, V>) -> Option<&'a BTreeBranch<K, V>> {
+    pub fn branch<'a>(&self, trie: &'a Trie<K, V, B>) -> Option<&'a B> {
         self.as_node(&trie.nodes)?.get_branch(&trie.branches)
     }
-    pub fn _branch_mut<'a>(
-        &mut self,
-        trie: &'a mut Trie<K, V>,
-    ) -> Option<&'a mut BTreeBranch<K, V>> {
+    pub fn _branch_mut<'a>(&mut self, trie: &'a mut Trie<K, V, B>) -> Option<&'a mut B> {
         self.as_node_mut(&mut trie.nodes)?
             .get_branch_mut(&mut trie.branches)
     }
     fn prune_messy(
         &self,
-        trie: &mut Trie<K, V>,
-    ) -> Option<(
-        Option<()>,
-        BranchHandle<K, V>,
-        Option<(K, NodeHandle<K, V>)>,
-    )> {
+        trie: &mut Trie<K, V, B>,
+    ) -> Option<(Option<()>, Handle<B>, Option<(K, NodeHandle<K, V, B>)>)> {
         let (leaf, branch) = self.is_node(&trie.nodes).leaf_branch();
         // only prune if self is branch
         let branch = branch?;
@@ -468,10 +478,10 @@ impl<K: Ord, V> VNode<K, V> {
     }
     fn prune_cleanup(
         &self,
-        trie: &mut Trie<K, V>,
+        trie: &mut Trie<K, V, B>,
         leaf: Option<()>,
-        branch: BranchHandle<K, V>,
-        displaced: Option<(K, NodeHandle<K, V>)>,
+        branch: Handle<B>,
+        displaced: Option<(K, NodeHandle<K, V, B>)>,
     ) {
         match (leaf, displaced) {
             // self is now empty, contract displaced into self
@@ -494,7 +504,7 @@ impl<K: Ord, V> VNode<K, V> {
             }
         }
     }
-    fn prune_contract(&self, trie: &mut Trie<K, V>, key: K, displaced: NodeHandle<K, V>) {
+    fn prune_contract(&self, trie: &mut Trie<K, V, B>, key: K, displaced: NodeHandle<K, V, B>) {
         let Trie {
             root: _,
             nodes,
@@ -517,7 +527,7 @@ impl<K: Ord, V> VNode<K, V> {
         let old = replace(node, displaced).branch().unwrap().remove(branches);
         debug_assert!(old.is_empty());
     }
-    pub fn prune_branch(&self, trie: &mut Trie<K, V>) -> bool {
+    pub fn prune_branch(&self, trie: &mut Trie<K, V, B>) -> bool {
         if let Some((leaf, branch, displaced)) = self.prune_messy(trie) {
             self.prune_cleanup(trie, leaf, branch, displaced);
         }

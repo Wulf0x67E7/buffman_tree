@@ -1,6 +1,6 @@
 use crate::{
     trie::{
-        branch::BTreeBranch,
+        branch::{BTreeBranch, Branch},
         handle::{Handle, Shared},
         leaf::{Leaf, LeafHandle},
         node::{Node, NodeHandle},
@@ -15,32 +15,32 @@ pub(self) mod node;
 pub(self) mod vnode;
 use std::{borrow::Borrow, convert::identity, fmt::Debug};
 
-pub trait NodeDebug<K, V> {
-    fn default_with_owner(#[cfg(feature = "testing")] owner: NodeHandle<K, V>) -> Self
+pub trait NodeDebug<K, V, B> {
+    fn default_with_owner(#[cfg(feature = "testing")] owner: NodeHandle<K, V, B>) -> Self
     where
         Self: Default;
-    fn debug<'a>(&'a self, trie: &'a Trie<K, V>) -> impl 'a + Debug
+    fn debug<'a>(&'a self, trie: &'a Trie<K, V, B>) -> impl 'a + Debug
     where
         K: Debug,
         V: Debug;
     #[cfg(feature = "testing")]
-    fn set_owner(&mut self, owner: NodeHandle<K, V>) -> NodeHandle<K, V>;
+    fn set_owner(&mut self, owner: NodeHandle<K, V, B>) -> NodeHandle<K, V, B>;
 }
 
-pub struct Trie<K, V> {
-    root: NodeHandle<K, V>,
-    nodes: Shared<Node<K, V>>,
-    branches: Shared<BTreeBranch<K, V>>,
+pub struct Trie<K, V, B = BTreeBranch<K, V>> {
+    root: NodeHandle<K, V, B>,
+    nodes: Shared<Node<K, V, B>>,
+    branches: Shared<B>,
     leaves: Shared<Leaf<V>>,
 }
-impl<K: Debug, V: Debug> Debug for Trie<K, V> {
+impl<K: Debug, V: Debug, B: NodeDebug<K, V, B>> Debug for Trie<K, V, B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Trie")
             .field(&self.root.get(&self.nodes).debug(&self))
             .finish()
     }
 }
-impl<K, V> Default for Trie<K, V> {
+impl<K, V, B> Default for Trie<K, V, B> {
     fn default() -> Self {
         let mut nodes = Handle::new_shared();
         Self {
@@ -59,7 +59,7 @@ impl<K, V> Default for Trie<K, V> {
         }
     }
 }
-impl<K, V> Trie<K, V> {
+impl<K, V, B> Trie<K, V, B> {
     pub fn with_capacity(capacity: usize) -> Self {
         let mut nodes = Handle::new_shared_with_capacity(capacity);
         Self {
@@ -78,7 +78,9 @@ impl<K, V> Trie<K, V> {
         }
     }
 }
-impl<K: IntoIterator<Item: Ord>, V> FromIterator<(K, V)> for Trie<K::Item, V> {
+impl<K: IntoIterator<Item: Ord>, V, B: Branch<K::Item, V>> FromIterator<(K, V)>
+    for Trie<K::Item, V, B>
+{
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let capacity = {
@@ -92,7 +94,9 @@ impl<K: IntoIterator<Item: Ord>, V> FromIterator<(K, V)> for Trie<K::Item, V> {
         this
     }
 }
-impl<K: Clone + IntoIterator<Item: Ord>, V> FromIterator<(K, V)> for Trie<K::Item, (K, V)> {
+impl<K: Clone + IntoIterator<Item: Ord>, V, B: Branch<K::Item, (K, V)>> FromIterator<(K, V)>
+    for Trie<K::Item, (K, V), B>
+{
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let capacity = {
@@ -106,12 +110,12 @@ impl<K: Clone + IntoIterator<Item: Ord>, V> FromIterator<(K, V)> for Trie<K::Ite
         this
     }
 }
-impl<K: Ord, V: PartialEq> PartialEq for Trie<K, V> {
+impl<K: Ord, V: PartialEq, B: Branch<K, V>> PartialEq for Trie<K, V, B> {
     fn eq(&self, other: &Self) -> bool {
         self.iter().eq(other.iter())
     }
 }
-impl<K: PartialEq + Ord, V> Trie<K, V> {
+impl<K, V, B: Branch<K, V>> Trie<K, V, B> {
     pub fn is_empty(&self) -> bool {
         let empty_shallow = self.root.get(&self.nodes).is_empty();
         debug_assert_eq!(
@@ -127,17 +131,18 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     pub fn len(&self) -> usize {
         self.leaves.len()
     }
-    pub fn insert(&mut self, key: impl IntoIterator<Item = K>, value: V) -> Option<V> {
+    pub fn insert(&mut self, key: impl IntoIterator<Item = K>, value: V) -> Option<V>
+    where
+        K: PartialEq,
+    {
         VNode::start(self.root.leak())
             .make_descend(self, key)
             .make_leaf(self, value)
     }
-    pub fn get<'a, Q: 'a + PartialEq + Ord>(
-        &self,
-        key: impl IntoIterator<Item = &'a Q>,
-    ) -> Option<&V>
+    pub fn get<'a, Q: 'a + PartialEq>(&self, key: impl IntoIterator<Item = &'a Q>) -> Option<&V>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         Some(self.get_handle(key)?.get(&self.leaves).get())
     }
@@ -147,6 +152,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     ) -> Option<&mut V>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         Some(self.get_handle(key)?.get_mut(&mut self.leaves).get_mut())
     }
@@ -156,6 +162,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     ) -> Result<&V, Option<&V>>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         Ok(self
             .try_get_handle(key)
@@ -171,6 +178,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     ) -> Result<&mut V, Option<&mut V>>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         match self.try_get_handle(key) {
             Ok(node) => Ok(node.get_mut(&mut self.leaves).get_mut()),
@@ -184,6 +192,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     ) -> Option<&V>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         self.try_get(key).map_or_else(identity, Option::Some)
     }
@@ -193,6 +202,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     ) -> Option<&mut V>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         self.try_get_mut(key).map_or_else(identity, Option::Some)
     }
@@ -202,6 +212,7 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     ) -> Option<V>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         VNode::start(self.root.leak())
             .dive(
@@ -245,25 +256,27 @@ impl<K: PartialEq + Ord, V> Trie<K, V> {
     }
 }
 
-impl<K: Ord, V> Trie<K, V> {
-    fn get_handle<'a, Q: 'a + PartialEq + Ord>(
+impl<K, V, B: Branch<K, V>> Trie<K, V, B> {
+    fn get_handle<'a, Q: 'a + PartialEq>(
         &self,
         key: impl IntoIterator<Item = &'a Q>,
     ) -> Option<LeafHandle<V>>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         VNode::start(self.root.leak())
             .descend(self, key, |_, _, _| true)
             .ok()?
             .leaf_handle(self)
     }
-    fn try_get_handle<'a, Q: 'a + PartialEq + Ord>(
+    fn try_get_handle<'a, Q: 'a + PartialEq>(
         &self,
         key: impl IntoIterator<Item = &'a Q>,
     ) -> Result<LeafHandle<V>, Option<LeafHandle<V>>>
     where
         K: Borrow<Q>,
+        B: Branch<K, V, Q>,
     {
         VNode::start(self.root.leak())
             .find(self, key, |node, this| Err(node.leaf_handle(this)))
