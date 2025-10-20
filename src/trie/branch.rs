@@ -2,7 +2,6 @@ use crate::{
     NodeDebug,
     trie::{
         Handle, Trie,
-        handle::Shared,
         node::{Node, NodeHandle},
     },
     util::debug_fn,
@@ -18,17 +17,16 @@ use std::{
 pub trait Branch<K, V, Q = K>: Sized + Default + NodeDebug<K, V, Self> {
     fn is_empty(&self) -> bool;
     fn insert(&mut self, key: K, node: NodeHandle<K, V, Self>) -> Option<NodeHandle<K, V, Self>>;
-    fn get_or_insert(
+    fn get_or_insert_with(
         &mut self,
-        this: NodeHandle<K, V, Self>,
-        shared: &mut Shared<Node<K, V, Self>>,
         key: K,
+        f: impl FnOnce() -> NodeHandle<K, V, Self>,
     ) -> NodeHandle<K, V, Self>;
     fn get(&self, key: &Q) -> Option<NodeHandle<K, V, Self>>;
-    fn cleanup(&mut self, nodes: &mut Shared<Node<K, V, Self>>) -> usize;
+    fn cleanup(&mut self, f: impl FnMut(&mut NodeHandle<K, V, Self>) -> bool) -> usize;
     fn prune(
         &mut self,
-        nodes: &mut Shared<Node<K, V, Self>>,
+        f: impl FnMut(&mut NodeHandle<K, V, Self>) -> bool,
     ) -> Option<Option<(K, NodeHandle<K, V, Self>)>>;
 
     fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a K, NodeHandle<K, V, Self>)>
@@ -99,48 +97,25 @@ impl<K: Ord + Borrow<Q>, V, Q: Ord> Branch<K, V, Q> for BTreeBranch<K, V> {
     fn insert(&mut self, key: K, node: NodeHandle<K, V, Self>) -> Option<NodeHandle<K, V, Self>> {
         self.map.insert(key, node)
     }
-    fn get_or_insert(
+    fn get_or_insert_with(
         &mut self,
-        this: NodeHandle<K, V, Self>,
-        shared: &mut Shared<Node<K, V, Self>>,
         key: K,
+        f: impl FnOnce() -> NodeHandle<K, V, Self>,
     ) -> NodeHandle<K, V, Self> {
-        #[cfg(feature = "testing")]
-        assert_eq!(self.owner, this);
-        self.map
-            .entry(key)
-            .or_insert_with(|| {
-                Handle::new_with(shared, |_t| {
-                    Node::from(
-                        #[cfg(feature = "testing")]
-                        _t,
-                        this,
-                        vec![],
-                        (),
-                    )
-                })
-            })
-            .leak()
+        self.map.entry(key).or_insert_with(f).leak()
     }
     fn get(&self, key: &Q) -> Option<NodeHandle<K, V, Self>> {
         self.map.get(key).map(Handle::leak)
     }
-    fn cleanup(&mut self, nodes: &mut Shared<Node<K, V, Self>>) -> usize {
-        self.map.retain(|_, node| {
-            if node.get(nodes).is_empty() {
-                node.leak().remove(nodes);
-                false
-            } else {
-                true
-            }
-        });
+    fn cleanup(&mut self, mut f: impl FnMut(&mut NodeHandle<K, V, Self>) -> bool) -> usize {
+        self.map.retain(|_, node| !f(node));
         self.map.len()
     }
     fn prune(
         &mut self,
-        nodes: &mut Shared<Node<K, V, Self>>,
+        f: impl FnMut(&mut NodeHandle<K, V, Self>) -> bool,
     ) -> Option<Option<(K, NodeHandle<K, V, Self>)>> {
-        match self.cleanup(nodes) {
+        match self.cleanup(f) {
             0 => Some(None),
             1 => Some(take(&mut self.map).into_iter().last()),
             _ => None,
@@ -186,7 +161,7 @@ impl<V> NodeDebug<u8, V, Self> for ByteBranch<V> {
         debug_fn(|fmt| {
             fmt.debug_map()
                 .entries(self.map.iter().enumerate().filter_map(|(k, node)| {
-                    (!node._is_null()).then(|| (k, node.get(&trie.nodes).debug(trie)))
+                    (!node.is_null()).then(|| (k, node.get(&trie.nodes).debug(trie)))
                 }))
                 .finish()
         })
@@ -199,7 +174,7 @@ impl<V> NodeDebug<u8, V, Self> for ByteBranch<V> {
 }
 impl<V> Branch<u8, V> for ByteBranch<V> {
     fn is_empty(&self) -> bool {
-        self.map.iter().all(|node| node._is_null())
+        self.map.iter().all(|node| node.is_null())
     }
     fn insert(
         &mut self,
@@ -208,49 +183,33 @@ impl<V> Branch<u8, V> for ByteBranch<V> {
     ) -> Option<NodeHandle<u8, V, Self>> {
         replace(&mut self.map[key as usize], node).valid()
     }
-    fn get_or_insert(
+    fn get_or_insert_with(
         &mut self,
-        owner: NodeHandle<u8, V, Self>,
-        shared: &mut Shared<Node<u8, V, Self>>,
         key: u8,
+        f: impl FnOnce() -> NodeHandle<u8, V, Self>,
     ) -> NodeHandle<u8, V, Self> {
-        #[cfg(feature = "testing")]
-        assert_eq!(self.owner, owner);
         let node = &mut self.map[key as usize];
         if let Some(node) = node.leak().valid() {
             node
         } else {
-            *node = Handle::new_with(shared, |_this| {
-                Node::from(
-                    #[cfg(feature = "testing")]
-                    _this,
-                    owner,
-                    vec![],
-                    (),
-                )
-            });
+            *node = f();
             node.leak()
         }
     }
     fn get(&self, key: &u8) -> Option<NodeHandle<u8, V, Self>> {
         self.map[*key as usize].leak().valid()
     }
-    fn cleanup(&mut self, nodes: &mut Shared<Node<u8, V, Self>>) -> usize {
+    fn cleanup(&mut self, mut f: impl FnMut(&mut NodeHandle<u8, V, Self>) -> bool) -> usize {
         self.map
             .iter_mut()
-            .filter_map(|node| {
-                if node.is_valid() && node.get(nodes).is_empty() {
-                    replace(node, Handle::new_null()).remove(nodes);
-                }
-                node.is_valid().then_some(())
-            })
+            .filter_map(|node| (!f(node)).then_some(()))
             .count()
     }
     fn prune(
         &mut self,
-        nodes: &mut Shared<Node<u8, V, Self>>,
+        f: impl FnMut(&mut NodeHandle<u8, V, Self>) -> bool,
     ) -> Option<Option<(u8, NodeHandle<u8, V, Self>)>> {
-        match self.cleanup(nodes) {
+        match self.cleanup(f) {
             0 => Some(None),
             1 => Some(Some(
                 self.map

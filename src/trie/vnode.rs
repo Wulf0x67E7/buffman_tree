@@ -80,7 +80,17 @@ impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
             Self::start(
                 self.make_branch(trie)
                     .get_mut(&mut trie.branches)
-                    .get_or_insert(self.handle.leak(), &mut trie.nodes, key),
+                    .get_or_insert_with(key, || {
+                        Handle::new_with(&mut trie.nodes, |_t| {
+                            Node::from(
+                                #[cfg(feature = "testing")]
+                                _t,
+                                self.handle.leak(),
+                                vec![],
+                                (),
+                            )
+                        })
+                    }),
             )
         }
     }
@@ -107,7 +117,17 @@ impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
                 vnode
                     .make_branch(trie)
                     .get_mut(&mut trie.branches)
-                    .get_or_insert(vnode.handle.leak(), &mut trie.nodes, key),
+                    .get_or_insert_with(key, || {
+                        Handle::new_with(&mut trie.nodes, |_t| {
+                            Node::from(
+                                #[cfg(feature = "testing")]
+                                _t,
+                                self.handle.leak(),
+                                vec![],
+                                (),
+                            )
+                        })
+                    }),
             );
         }
     }
@@ -472,7 +492,12 @@ impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
             leaf.map(|_| ()),
             branch.leak(),
             // try to prune
-            branch.get_mut(&mut trie.branches).prune(&mut trie.nodes)?,
+            branch.get_mut(&mut trie.branches).prune(|handle| {
+                if handle.get_null(&trie.nodes).is_some_and(Node::is_empty) {
+                    replace(handle, Handle::new_null()).remove(&mut trie.nodes);
+                }
+                handle.is_null()
+            })?,
         ))
     }
     fn prune_cleanup(

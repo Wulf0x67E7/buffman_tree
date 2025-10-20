@@ -170,14 +170,14 @@ impl<K, V, B> Node<K, V, B> {
             self._get_leaf_mut(leaves).map(|leaf| leaf.set_owner(this)),
         );
         if let Some(old_b) = old_b
-            && !old_a._is_null()
-            && !old_b._is_null()
+            && !old_a.is_null()
+            && !old_b.is_null()
         {
             assert_eq!(old_a, old_b);
         }
         if let Some(old_c) = old_c
-            && !old_a._is_null()
-            && !old_c._is_null()
+            && !old_a.is_null()
+            && !old_c.is_null()
         {
             assert_eq!(old_a, old_c);
         }

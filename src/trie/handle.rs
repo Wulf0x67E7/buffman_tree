@@ -24,7 +24,7 @@ impl<T> Handle<T> {
         Self::from(usize::MAX)
     }
     pub fn _set(self, shared: &mut Slab<T>, val: T) -> Self {
-        assert!(self._is_null());
+        assert!(self.is_null());
         Self::from(shared.insert(val))
     }
     pub fn new(shared: &mut Slab<T>, val: T) -> Self {
@@ -42,32 +42,32 @@ impl<T> Handle<T> {
     {
         Self::new(shared, T::default())
     }
-    pub fn _is_null(&self) -> bool {
+    pub fn is_null(&self) -> bool {
         self.0 == usize::MAX
     }
     pub fn is_valid(&self) -> bool {
-        !self._is_null()
+        !self.is_null()
     }
     pub fn leak(&self) -> Self {
         Self::from(self.0)
     }
     pub fn valid(self) -> Option<Self> {
-        (!self._is_null()).then_some(self)
+        (!self.is_null()).then_some(self)
     }
-    pub fn _get_null<'a>(&self, shared: &'a Slab<T>) -> Option<&'a T> {
-        (!self._is_null()).then(|| self.get(shared))
+    pub fn get_null<'a>(&self, shared: &'a Slab<T>) -> Option<&'a T> {
+        (!self.is_null()).then(|| self.get(shared))
     }
     pub fn get<'a>(&self, shared: &'a Slab<T>) -> &'a T {
         &shared[self.0]
     }
-    pub fn _get_mut_null<'a>(&self, shared: &'a mut Slab<T>) -> Option<&'a mut T> {
-        (!self._is_null()).then(|| self.get_mut(shared))
+    pub fn get_mut_null<'a>(&self, shared: &'a mut Slab<T>) -> Option<&'a mut T> {
+        (!self.is_null()).then(|| self.get_mut(shared))
     }
     pub fn get_mut<'a>(&self, shared: &'a mut Slab<T>) -> &'a mut T {
         &mut shared[self.0]
     }
     pub fn _replace_null(&self, shared: &mut Slab<T>, val: T) -> Result<T, T> {
-        if self._is_null() {
+        if self.is_null() {
             Err(val)
         } else {
             Ok(self._replace(shared, val))
@@ -77,7 +77,7 @@ impl<T> Handle<T> {
         std::mem::replace(self.get_mut(shared), val)
     }
     pub fn _remove_null(self, shared: &mut Slab<T>) -> Option<T> {
-        (!self._is_null()).then(|| self.remove(shared))
+        (!self.is_null()).then(|| self.remove(shared))
     }
     pub fn remove(self, shared: &mut Slab<T>) -> T {
         shared.remove(self.0)

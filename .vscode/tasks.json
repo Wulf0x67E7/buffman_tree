@@ -29,6 +29,19 @@
 		},
 		{
 			"type": "cargo",
+			"command": "+nightly",
+			"args": [
+				"miri",
+				"test",
+			],
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "rust: cargo +nightly miri test"
+		},
+		{
+			"type": "cargo",
 			"command": "build",
 			"args": [
 				"--release"

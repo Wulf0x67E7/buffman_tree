@@ -7,8 +7,14 @@ use std::{
 
 #[quickcheck]
 fn iter_ord(data: BTreeSet<Vec<u8>>) {
-    let trie: Trie<u8, (Vec<u8>, ())> = Trie::from_iter(data.iter().cloned().zip(repeat(())));
-    let data2 = Vec::from_iter(trie.into_iter().map(|(v, ())| v));
+    let mut trie: Trie<u8, (Vec<u8>, usize)> = Trie::from_iter(data.iter().cloned().zip(repeat(0)));
+    for (v, l) in trie.iter_mut() {
+        *l = v.len();
+    }
+    let data2 = Vec::from_iter(trie.into_iter().map(|(v, l)| {
+        assert_eq!(l, v.len());
+        v
+    }));
     assert_eq!(data.len(), data2.len());
     assert!(
         zip(&data, &data2).all(unzipped(PartialEq::eq)),
