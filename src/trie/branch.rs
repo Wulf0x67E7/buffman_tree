@@ -287,6 +287,7 @@ impl<V> Branch<u8, V> for ByteBranch<V> {
         self.map
             .iter()
             .enumerate()
+            .rev()
             .filter_map(|(k, node)| node.leak().valid().map(|node| (&KEYS[k], node)))
     }
 }

@@ -1,4 +1,4 @@
-use crate::{testing::BTrie, trie::Trie};
+use crate::{branch::Branch, testing::BTrie, trie::Trie};
 use quickcheck::{Arbitrary, Gen, empty_shrinker, single_shrinker};
 use std::{
     borrow::Borrow,
@@ -148,7 +148,8 @@ impl<'a, V> FromIterator<V> for Return<'a, V> {
         Self::Vals(Vec::from_iter(iter))
     }
 }
-impl<K: IntoIterator<Item: Ord>, V: Debug + Clone + PartialEq> Consumer<(K, V)> for Trie<K::Item, V>
+impl<K: IntoIterator<Item: PartialEq>, V: Debug + Clone + PartialEq, B: Branch<K::Item, V>>
+    Consumer<(K, V)> for Trie<K::Item, V, B>
 where
     for<'a> &'a K: IntoIterator<Item = &'a K::Item>,
 {

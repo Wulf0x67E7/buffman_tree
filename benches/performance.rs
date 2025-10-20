@@ -1,4 +1,9 @@
-use buffman_tree::{Trie, testing::BTrie, util::time};
+use buffman_tree::{
+    Trie,
+    branch::{BTreeBranch, Branch, ByteBranch},
+    testing::BTrie,
+    util::time,
+};
 use quickcheck::{Arbitrary, Gen};
 use rand::{RngCore, SeedableRng, seq::SliceRandom};
 use rand_xoshiro::Xoshiro256PlusPlus;
@@ -7,7 +12,8 @@ use std::{borrow::Borrow, collections::BTreeMap, hint::black_box, time::Duration
 trait MapExt<Q: ?Sized, V> {
     fn get_longest_prefix(&self, key: &Q) -> Option<&V>;
 }
-impl<K: Ord, Q: IntoIterator<Item: Ord>, V> MapExt<Q, V> for Trie<K, V>
+impl<K: Ord, Q: IntoIterator<Item: Ord>, V, B: Branch<K, V> + Branch<K, V, Q::Item>> MapExt<Q, V>
+    for Trie<K, V, B>
 where
     for<'a> &'a Q: IntoIterator<Item = &'a Q::Item>,
     K: Borrow<Q::Item>,
@@ -45,10 +51,10 @@ fn performance() {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0);
     let mut g = Gen::new(256);
     let mut generate = || {
-        Vec::<(Box<[char]>, usize)>::from_iter((0..1 << 16).map(|x| {
+        Vec::<(Box<[u8]>, usize)>::from_iter((0..1 << 16).map(|x| {
             (
                 (0..rng.next_u32() % 512)
-                    .map(|_| char::arbitrary(&mut g))
+                    .map(|_| u8::arbitrary(&mut g))
                     .collect(),
                 black_box(x),
             )
@@ -64,15 +70,26 @@ fn performance() {
         v
     };
 
-    let btree = bench::<BTreeMap<Box<[char]>, usize>, _, _, _>(
+    let btree = bench::<BTreeMap<Box<[u8]>, usize>, _, _, _>(
         entries.clone(),
         searches.iter().map(|k| &**k),
         usize::wrapping_add,
     );
-    let trie = bench::<Trie<char, usize>, _, _, _>(entries.clone(), &searches, usize::wrapping_add);
+    let btrie = bench::<Trie<u8, usize, BTreeBranch<_, _>>, _, _, _>(
+        entries.clone(),
+        &searches,
+        usize::wrapping_add,
+    );
+    let byte_trie = bench::<Trie<u8, usize, ByteBranch<_>>, _, _, _>(
+        entries.clone(),
+        &searches,
+        usize::wrapping_add,
+    );
 
-    println!("btree:    {btree:?}");
-    println!("trie2:    {trie:?}");
+    println!("std::btreemap:    {btree:?}");
+    println!("btreebranch_trie: {btrie:?}");
+    println!("bytebranch_trie:  {byte_trie:?}");
 
-    assert_eq!(btree.2, trie.2);
+    assert_eq!(btree.2, btrie.2);
+    assert_eq!(btree.2, byte_trie.2);
 }

@@ -8,7 +8,7 @@ use crate::{
     },
     util::opt_res_ext::OptExt as _,
 };
-pub(self) mod branch;
+pub mod branch;
 pub(self) mod handle;
 pub(self) mod leaf;
 pub(self) mod node;
@@ -78,7 +78,7 @@ impl<K, V, B> Trie<K, V, B> {
         }
     }
 }
-impl<K: IntoIterator<Item: Ord>, V, B: Branch<K::Item, V>> FromIterator<(K, V)>
+impl<K: IntoIterator<Item: PartialEq>, V, B: Branch<K::Item, V>> FromIterator<(K, V)>
     for Trie<K::Item, V, B>
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
@@ -94,7 +94,7 @@ impl<K: IntoIterator<Item: Ord>, V, B: Branch<K::Item, V>> FromIterator<(K, V)>
         this
     }
 }
-impl<K: Clone + IntoIterator<Item: Ord>, V, B: Branch<K::Item, (K, V)>> FromIterator<(K, V)>
+impl<K: Clone + IntoIterator<Item: PartialEq>, V, B: Branch<K::Item, (K, V)>> FromIterator<(K, V)>
     for Trie<K::Item, (K, V), B>
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
@@ -110,7 +110,7 @@ impl<K: Clone + IntoIterator<Item: Ord>, V, B: Branch<K::Item, (K, V)>> FromIter
         this
     }
 }
-impl<K: Ord, V: PartialEq, B: Branch<K, V>> PartialEq for Trie<K, V, B> {
+impl<K: PartialEq, V: PartialEq, B: Branch<K, V>> PartialEq for Trie<K, V, B> {
     fn eq(&self, other: &Self) -> bool {
         self.iter().eq(other.iter())
     }
@@ -146,7 +146,7 @@ impl<K, V, B: Branch<K, V>> Trie<K, V, B> {
     {
         Some(self.get_handle(key)?.get(&self.leaves).get())
     }
-    pub fn get_mut<'a, Q: 'a + PartialEq + Ord>(
+    pub fn get_mut<'a, Q: 'a + PartialEq>(
         &mut self,
         key: impl IntoIterator<Item = &'a Q>,
     ) -> Option<&mut V>
@@ -156,7 +156,7 @@ impl<K, V, B: Branch<K, V>> Trie<K, V, B> {
     {
         Some(self.get_handle(key)?.get_mut(&mut self.leaves).get_mut())
     }
-    pub fn try_get<'a, Q: 'a + PartialEq + Ord>(
+    pub fn try_get<'a, Q: 'a + PartialEq>(
         &self,
         key: impl IntoIterator<Item = &'a Q>,
     ) -> Result<&V, Option<&V>>
@@ -172,7 +172,7 @@ impl<K, V, B: Branch<K, V>> Trie<K, V, B> {
             .get(&self.leaves)
             .get())
     }
-    pub fn try_get_mut<'a, Q: 'a + PartialEq + Ord>(
+    pub fn try_get_mut<'a, Q: 'a + PartialEq>(
         &mut self,
         key: impl IntoIterator<Item = &'a Q>,
     ) -> Result<&mut V, Option<&mut V>>
@@ -186,7 +186,7 @@ impl<K, V, B: Branch<K, V>> Trie<K, V, B> {
             Err(None) => Err(None),
         }
     }
-    pub fn get_deepest<'a, Q: 'a + PartialEq + Ord>(
+    pub fn get_deepest<'a, Q: 'a + PartialEq>(
         &self,
         key: impl IntoIterator<Item = &'a Q>,
     ) -> Option<&V>
@@ -196,7 +196,7 @@ impl<K, V, B: Branch<K, V>> Trie<K, V, B> {
     {
         self.try_get(key).map_or_else(identity, Option::Some)
     }
-    pub fn get_deepest_mut<'a, Q: 'a + PartialEq + Ord>(
+    pub fn get_deepest_mut<'a, Q: 'a + PartialEq>(
         &mut self,
         key: impl IntoIterator<Item = &'a Q>,
     ) -> Option<&mut V>
@@ -206,7 +206,7 @@ impl<K, V, B: Branch<K, V>> Trie<K, V, B> {
     {
         self.try_get_mut(key).map_or_else(identity, Option::Some)
     }
-    pub fn remove<'a, Q: 'a + PartialEq + Ord>(
+    pub fn remove<'a, Q: 'a + PartialEq>(
         &mut self,
         key: impl IntoIterator<Item = &'a Q>,
     ) -> Option<V>

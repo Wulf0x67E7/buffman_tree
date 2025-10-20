@@ -1,5 +1,6 @@
 use buffman_tree::{
     Trie,
+    branch::{BTreeBranch, Branch, ByteBranch},
     testing::{Action, Op, Procedure},
 };
 use quickcheck::TestResult;
@@ -12,7 +13,10 @@ use std::{
 fn btree_oracle() {
     quickcheck::QuickCheck::new()
         .tests(0x400)
-        .quickcheck(test as fn(Procedure<(Vec<u8>, usize)>) -> TestResult);
+        .quickcheck(test::<BTreeBranch<_, _>> as fn(Procedure<(Vec<u8>, usize)>) -> TestResult);
+    quickcheck::QuickCheck::new()
+        .tests(0x400)
+        .quickcheck(test::<ByteBranch<_>> as fn(Procedure<(Vec<u8>, usize)>) -> TestResult);
 }
 
 #[test]
@@ -52,19 +56,23 @@ fn btree_oracle_cases() {
         ]),
     ];
     for case in cases {
-        let dbg_str = format!("{case:#?}");
-        let res = catch_unwind(|| test(case));
-        match res {
-            Ok(res) if res.is_failure() => panic!("Failed case: {dbg_str}\nResult: {res:#?}"),
-            Ok(_) => (),
-            Err(err) => {
-                println!("Failed case: {dbg_str}\nError: {err:#?}");
-                resume_unwind(err)
-            }
-        }
+        test_case::<BTreeBranch<_, _>>(case.clone());
+        test_case::<ByteBranch<_>>(case);
     }
 }
 
-fn test(proc: Procedure<(Vec<u8>, usize)>) -> TestResult {
-    proc.run::<BTreeMap<_, _>, Trie<_, _>>()
+fn test_case<B: 'static + Branch<u8, usize>>(case: Procedure<(Vec<u8>, usize)>) {
+    let dbg_str = format!("{case:#?}");
+    let res = catch_unwind(|| test::<B>(case));
+    match res {
+        Ok(res) if res.is_failure() => panic!("Failed case: {dbg_str}\nResult: {res:#?}"),
+        Ok(_) => (),
+        Err(err) => {
+            println!("Failed case: {dbg_str}\nError: {err:#?}");
+            resume_unwind(err)
+        }
+    }
+}
+fn test<B: 'static + Branch<u8, usize>>(proc: Procedure<(Vec<u8>, usize)>) -> TestResult {
+    proc.run::<BTreeMap<_, _>, Trie<_, _, B>>()
 }
