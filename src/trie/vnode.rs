@@ -277,10 +277,7 @@ impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
             loop {
                 let node = stack.pop()?.skip_prefix(&trie);
                 if let Some(branch) = node.branch(&trie) {
-                    stack.extend(branch.values().map(|node| Self {
-                        prefix_len: 0,
-                        handle: node.leak(),
-                    }));
+                    Self::stack_extend(&mut stack, branch);
                 }
                 if let Some((_, leaf)) = node.take_leaf(&mut trie) {
                     break Some(leaf);
@@ -297,10 +294,7 @@ impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
             loop {
                 let node = stack.pop()?.skip_prefix(trie);
                 if let Some(branch) = node.branch(trie) {
-                    stack.extend(branch.values().map(|node| Self {
-                        prefix_len: 0,
-                        handle: node.leak(),
-                    }));
+                    Self::stack_extend(&mut stack, branch);
                 }
                 if let Some(leaf) = node.leaf(trie) {
                     break Some(leaf);
@@ -318,10 +312,7 @@ impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
             loop {
                 let node = stack.pop()?.skip_prefix(trie);
                 if let Some(branch) = node.branch(trie) {
-                    stack.extend(branch.values().map(|node| Self {
-                        prefix_len: 0,
-                        handle: node.leak(),
-                    }));
+                    Self::stack_extend(&mut stack, branch);
                 }
                 if let Some(leaf) = node.leaf_mut(trie) {
                     // SAFETY (lifetime extension):
@@ -332,6 +323,14 @@ impl<K, V, B: Branch<K, V>> VNode<K, V, B> {
                 }
             }
         })
+    }
+    fn stack_extend(stack: &mut Vec<Self>, branch: &B) {
+        let len = stack.len();
+        stack.extend(branch.values().map(|node| Self {
+            prefix_len: 0,
+            handle: node.leak(),
+        }));
+        stack[len..].reverse();
     }
 }
 

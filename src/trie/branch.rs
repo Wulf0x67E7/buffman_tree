@@ -151,9 +151,7 @@ impl<K: Ord + Borrow<Q>, V, Q: Ord> Branch<K, V, Q> for BTreeBranch<K, V> {
     where
         K: 'a,
     {
-        // .rev() needed to ensure correct iteration order of full trie.
-        // see: vnode iteration pushes to node stack
-        self.map.iter().rev().map(|(k, v)| (k, v.leak()))
+        self.map.iter().map(|(k, v)| (k, v.leak()))
     }
 }
 
@@ -287,7 +285,6 @@ impl<V> Branch<u8, V> for ByteBranch<V> {
         self.map
             .iter()
             .enumerate()
-            .rev()
             .filter_map(|(k, node)| node.leak().valid().map(|node| (&KEYS[k], node)))
     }
 }
