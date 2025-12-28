@@ -83,7 +83,13 @@ pub struct Node<K, V, B> {
 }
 impl<K, V, B: NodeDebug<K, V, B>> NodeDebug<K, V, B> for Node<K, V, B> {
     fn default_with_owner(#[cfg(feature = "testing")] owner: NodeHandle<K, V, B>) -> Self {
-        Self::from(owner, Handle::new_null(), Vec::default(), ())
+        Self::from(
+            #[cfg(feature = "testing")]
+            owner,
+            Handle::new_null(),
+            Vec::default(),
+            (),
+        )
     }
     fn debug<'a>(&'a self, trie: &'a Trie<K, V, B>) -> impl 'a + Debug
     where
@@ -109,6 +115,7 @@ impl<K, V, B: NodeDebug<K, V, B>> NodeDebug<K, V, B> for Node<K, V, B> {
             f.finish()
         })
     }
+    #[cfg(feature = "testing")]
     fn set_owner(&mut self, owner: NodeHandle<K, V, B>) -> NodeHandle<K, V, B> {
         use std::mem::replace;
         replace(&mut self.this, owner)

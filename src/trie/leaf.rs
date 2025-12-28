@@ -39,6 +39,7 @@ impl<K, V, B> NodeDebug<K, V, B> for Leaf<V> {
     {
         &self.value
     }
+    #[cfg(feature = "testing")]
     fn set_owner(
         &mut self,
         owner: super::node::NodeHandle<K, V, B>,

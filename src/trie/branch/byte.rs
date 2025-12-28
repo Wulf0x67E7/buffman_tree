@@ -15,6 +15,7 @@ impl<V> Default for ByteBranch<V> {
     fn default() -> Self {
         Self {
             map: std::array::from_fn(|_| Handle::new_null()),
+            #[cfg(feature = "testing")]
             owner: Handle::new_null(),
         }
     }
@@ -26,6 +27,7 @@ impl<V> NodeDebug<u8, V, Self> for ByteBranch<V> {
     {
         Self {
             map: from_fn(|_| Handle::new_null()),
+            #[cfg(feature = "testing")]
             owner,
         }
     }
